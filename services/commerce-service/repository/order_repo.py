@@ -34,7 +34,7 @@ class OrderRepo:
                 wallet_updated=False,
             )
             db.add(order)
-            db.commit()
+            db.flush()
             db.refresh(order)
             return order
         except SQLAlchemyError as e:
@@ -58,6 +58,12 @@ class OrderRepo:
         except SQLAlchemyError as e:
             raise DatabaseException(message="Failed to fetch order by checkout", details=str(e))
 
+    def get_all_by_checkout_id(self, db: Session, checkout_id: str) -> list[Order]:
+        try:
+            return db.query(Order).filter(Order.checkout_id == checkout_id).all()
+        except SQLAlchemyError as e:
+            raise DatabaseException(message="Failed to fetch orders by checkout", details=str(e))
+
     def get_by_user_id(self, db: Session, user_id: str) -> list[Order]:
         try:
             return db.query(Order).filter(Order.user_id == user_id).all()
@@ -74,7 +80,7 @@ class OrderRepo:
         try:
             order = self.get_by_id(db, order_id)
             order.order_status = status
-            db.commit()
+            db.flush()
             db.refresh(order)
             return order
         except (NotFoundException, DatabaseException):
@@ -87,7 +93,7 @@ class OrderRepo:
         try:
             order = self.get_by_id(db, order_id)
             order.ledger_updated = True
-            db.commit()
+            db.flush()
             db.refresh(order)
             return order
         except (NotFoundException, DatabaseException):
@@ -100,7 +106,7 @@ class OrderRepo:
         try:
             order = self.get_by_id(db, order_id)
             order.wallet_updated = True
-            db.commit()
+            db.flush()
             db.refresh(order)
             return order
         except (NotFoundException, DatabaseException):
@@ -113,12 +119,9 @@ class OrderRepo:
         try:
             order = self.get_by_id(db, order_id)
             db.delete(order)
-            db.commit()
+            db.flush()
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
             raise DatabaseException(message="Failed to delete order", details=str(e))
-
-
-order_repo = OrderRepo()

@@ -16,7 +16,7 @@ class InventoryRepo:
                 reserved_quantity=0,
             )
             db.add(inventory)
-            db.commit()
+            db.flush()
             db.refresh(inventory)
             return inventory
         except SQLAlchemyError as e:
@@ -62,7 +62,7 @@ class InventoryRepo:
                 )
             inventory.available_quantity -= quantity
             inventory.reserved_quantity += quantity
-            db.commit()
+            db.flush()
             db.refresh(inventory)
             return inventory
         except (NotFoundException, InsufficientStockException, DatabaseException):
@@ -84,7 +84,7 @@ class InventoryRepo:
                 )
             inventory.reserved_quantity -= quantity
             inventory.available_quantity += quantity
-            db.commit()
+            db.flush()
             db.refresh(inventory)
             return inventory
         except (NotFoundException, DatabaseException):
@@ -105,7 +105,7 @@ class InventoryRepo:
                     details={"product_id": product_id, "requested": quantity, "reserved": inventory.reserved_quantity},
                 )
             inventory.reserved_quantity -= quantity
-            db.commit()
+            db.flush()
             db.refresh(inventory)
             return inventory
         except (NotFoundException, DatabaseException):
@@ -118,12 +118,9 @@ class InventoryRepo:
         try:
             inventory = self.get_by_id(db, inventory_id)
             db.delete(inventory)
-            db.commit()
+            db.flush()
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
             raise DatabaseException(message="Failed to delete inventory", details=str(e))
-
-
-inventory_repo = InventoryRepo()

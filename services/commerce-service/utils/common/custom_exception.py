@@ -25,10 +25,18 @@ class AppException(Exception):
 class NotFoundException(AppException):
     """Raised when a requested resource does not exist."""
 
-    def __init__(self, resource: str, identifier: Any = None) -> None:
-        message = f"{resource} not found"
-        if identifier is not None:
-            message = f"{resource} '{identifier}' not found"
+    def __init__(
+        self,
+        resource: str = "Resource",
+        identifier: Any = None,
+        message: Optional[str] = None,
+    ) -> None:
+        # Supports both NotFoundException(resource, identifier) and
+        # the legacy NotFoundException(message="...") calling convention.
+        if message is None:
+            message = f"{resource} not found"
+            if identifier is not None:
+                message = f"{resource} '{identifier}' not found"
         super().__init__(status_code=404, message=message, error="NOT_FOUND")
 
 
@@ -57,6 +65,17 @@ class DatabaseException(AppException):
         super().__init__(status_code=500, message=message, error="DATABASE_ERROR", details=details)
 
 
+class ServiceException(AppException):
+    """Raised when an unexpected error occurs in the service layer."""
+
+    def __init__(
+        self,
+        message: str = "A service error occurred",
+        details: Optional[Any] = None,
+    ) -> None:
+        super().__init__(status_code=500, message=message, error="SERVICE_ERROR", details=details)
+
+
 class InsufficientStockException(AppException):
     """Raised when requested inventory quantity exceeds available stock."""
 
@@ -65,9 +84,11 @@ class InsufficientStockException(AppException):
         product_id: Any = None,
         requested: Optional[int] = None,
         available: Optional[int] = None,
+        details: Optional[Any] = None,
     ) -> None:
-        details = None
-        if product_id is not None:
+        # Supports both InsufficientStockException(product_id, requested, available)
+        # and the legacy InsufficientStockException(details={...}) calling convention.
+        if details is None and product_id is not None:
             details = {
                 "product_id": str(product_id),
                 "requested": requested,

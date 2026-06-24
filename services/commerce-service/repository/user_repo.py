@@ -11,7 +11,7 @@ class UserRepo:
         try:
             user = User(id=str(uuid.uuid4()), name=name, email=email, phone=phone)
             db.add(user)
-            db.commit()
+            db.flush()
             db.refresh(user)
             return user
         except SQLAlchemyError as e:
@@ -47,7 +47,7 @@ class UserRepo:
             for key, value in kwargs.items():
                 if hasattr(user, key):
                     setattr(user, key, value)
-            db.commit()
+            db.flush()
             db.refresh(user)
             return user
         except (NotFoundException, DatabaseException):
@@ -60,12 +60,9 @@ class UserRepo:
         try:
             user = self.get_by_id(db, user_id)
             db.delete(user)
-            db.commit()
+            db.flush()
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
             raise DatabaseException(message="Failed to delete user", details=str(e))
-
-
-user_repo = UserRepo()

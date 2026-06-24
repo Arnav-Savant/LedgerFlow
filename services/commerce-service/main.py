@@ -5,6 +5,10 @@ from config.server_config import server_config
 from config.logger import logger
 from utils.common.custom_exception import AppException
 from utils.common.error_response import ErrorResponse
+from utils.common.success_response import SuccessResponse
+from middleware.user_validation import UserValidationMiddleware
+from routes.checkout_routes import router as checkout_router
+from routes.order_routes import router as order_router
 import uvicorn
 
 
@@ -47,12 +51,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(UserValidationMiddleware)
+
+_API_PREFIX = "/api/v1"
+app.include_router(checkout_router, prefix=_API_PREFIX)
+app.include_router(order_router, prefix=_API_PREFIX)
+
+
+# ── Global exception handlers ─────────────────────────────────────────────────
+# These act as a final safety net for any AppException or unknown Exception that
+# was NOT caught by a route handler (e.g. raised in middleware or lifespan code).
+# Route handlers have their own try/except and return ErrorResponse directly, so
+# most exceptions will not reach these handlers during normal request processing.
 
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     error = ErrorResponse.from_exception(exc)
     logger.error(
-        "AppException raised",
+        "Unhandled AppException",
         path=request.url.path,
         status_code=error.status_code,
         error=error.error,
@@ -70,11 +86,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
+    data = {
         "service": server_config.name,
         "environment": server_config.environment,
+        "status": "ok",
     }
+    return SuccessResponse.ok(data=data, message="Service is healthy")
 
 
 if __name__ == "__main__":

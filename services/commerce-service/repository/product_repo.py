@@ -12,7 +12,7 @@ class ProductRepo:
         try:
             product = Product(id=str(uuid.uuid4()), seller_id=seller_id, name=name, price=price, currency=currency)
             db.add(product)
-            db.commit()
+            db.flush()
             db.refresh(product)
             return product
         except SQLAlchemyError as e:
@@ -48,7 +48,7 @@ class ProductRepo:
             for key, value in kwargs.items():
                 if hasattr(product, key):
                     setattr(product, key, value)
-            db.commit()
+            db.flush()
             db.refresh(product)
             return product
         except (NotFoundException, DatabaseException):
@@ -61,12 +61,9 @@ class ProductRepo:
         try:
             product = self.get_by_id(db, product_id)
             db.delete(product)
-            db.commit()
+            db.flush()
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
             raise DatabaseException(message="Failed to delete product", details=str(e))
-
-
-product_repo = ProductRepo()

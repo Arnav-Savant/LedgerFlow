@@ -11,7 +11,7 @@ class SellerRepo:
         try:
             seller = Seller(id=str(uuid.uuid4()), name=name, email=email)
             db.add(seller)
-            db.commit()
+            db.flush()
             db.refresh(seller)
             return seller
         except SQLAlchemyError as e:
@@ -47,7 +47,7 @@ class SellerRepo:
             for key, value in kwargs.items():
                 if hasattr(seller, key):
                     setattr(seller, key, value)
-            db.commit()
+            db.flush()
             db.refresh(seller)
             return seller
         except (NotFoundException, DatabaseException):
@@ -60,12 +60,9 @@ class SellerRepo:
         try:
             seller = self.get_by_id(db, seller_id)
             db.delete(seller)
-            db.commit()
+            db.flush()
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
             raise DatabaseException(message="Failed to delete seller", details=str(e))
-
-
-seller_repo = SellerRepo()

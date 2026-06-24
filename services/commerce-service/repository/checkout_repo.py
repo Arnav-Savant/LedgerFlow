@@ -9,29 +9,16 @@ from utils.common.custom_exception import DatabaseException, NotFoundException
 
 
 class CheckoutRepo:
-    def create(
-        self,
-        db: Session,
-        user_id: str,
-        product_id: str,
-        seller_id: str,
-        total_amount: int,
-        final_amount: int,
-        coupon_id: Optional[str] = None,
-    ) -> Checkout:
+    def create(self, db: Session, user_id: str, total_amount: int = 0) -> Checkout:
         try:
             checkout = Checkout(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
-                product_id=product_id,
-                seller_id=seller_id,
-                coupon_id=coupon_id,
                 total_amount=total_amount,
-                final_amount=final_amount,
                 status=CheckoutStatus.PENDING,
             )
             db.add(checkout)
-            db.commit()
+            db.flush()
             db.refresh(checkout)
             return checkout
         except SQLAlchemyError as e:
@@ -61,11 +48,33 @@ class CheckoutRepo:
         except SQLAlchemyError as e:
             raise DatabaseException(message="Failed to fetch checkouts", details=str(e))
 
+    def update(
+        self,
+        db: Session,
+        checkout_id: str,
+        total_amount: Optional[int] = None,
+        status: Optional[CheckoutStatus] = None,
+    ) -> Checkout:
+        try:
+            checkout = self.get_by_id(db, checkout_id)
+            if total_amount is not None:
+                checkout.total_amount = total_amount
+            if status is not None:
+                checkout.status = status
+            db.flush()
+            db.refresh(checkout)
+            return checkout
+        except (NotFoundException, DatabaseException):
+            raise
+        except SQLAlchemyError as e:
+            db.rollback()
+            raise DatabaseException(message="Failed to update checkout", details=str(e))
+
     def update_status(self, db: Session, checkout_id: str, status: CheckoutStatus) -> Checkout:
         try:
             checkout = self.get_by_id(db, checkout_id)
             checkout.status = status
-            db.commit()
+            db.flush()
             db.refresh(checkout)
             return checkout
         except (NotFoundException, DatabaseException):
@@ -78,36 +87,28 @@ class CheckoutRepo:
         try:
             checkout = self.get_by_id(db, checkout_id)
             db.delete(checkout)
-            db.commit()
+            db.flush()
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
             raise DatabaseException(message="Failed to delete checkout", details=str(e))
 
-    def get_with_product_and_user(self, db: Session, checkout_id: str) -> Optional[dict]:
+    def get_with_user(self, db: Session, checkout_id: str) -> Optional[dict]:
         try:
             sql = text("""
                 SELECT
                     c.id            AS checkout_id,
                     c.status        AS checkout_status,
                     c.total_amount,
-                    c.final_amount,
+                    c.user_id,
                     u.name          AS user_name,
-                    u.email         AS user_email,
-                    p.name          AS product_name,
-                    p.price         AS product_price,
-                    s.name          AS seller_name
+                    u.email         AS user_email
                 FROM checkouts c
-                JOIN users    u ON u.id = c.user_id
-                JOIN products p ON p.id = c.product_id
-                JOIN sellers  s ON s.id = c.seller_id
+                JOIN users u ON u.id = c.user_id
                 WHERE c.id = :checkout_id
             """)
             row = db.execute(sql, {"checkout_id": checkout_id}).mappings().first()
             return dict(row) if row else None
         except SQLAlchemyError as e:
             raise DatabaseException(message="Failed to fetch checkout with details", details=str(e))
-
-
-checkout_repo = CheckoutRepo()
