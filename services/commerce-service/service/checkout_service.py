@@ -34,7 +34,7 @@ class CheckoutService:
           3. Create one Order per product (flush).
           4. Payment initiation placeholder.
           5. Transition all orders → PAYMENT_PENDING (flush).
-          6. Update checkout total_amount and status → PAYMENT_PENDING (flush).
+          6. Update checkout total_amount and status → PAYMENT_INITIATED (flush).
           7. db.commit() — all steps land atomically.
 
         On any failure: db.rollback() undoes every flush in one shot.
@@ -97,18 +97,18 @@ class CheckoutService:
                 self.order_service.update_order_status(db, order.id, OrderStatus.PAYMENT_PENDING)
                 logger.info("Order status updated", order_id=order.id, status=OrderStatus.PAYMENT_PENDING)
 
-            # Step 6: Update checkout with final total and status → PAYMENT_PENDING
+            # Step 6: Update checkout with final total and status → PAYMENT_INITIATED
             updated_checkout = self.checkout_repo.update(
                 db,
                 checkout.id,
                 total_amount=total_amount,
-                status=CheckoutStatus.PAYMENT_PENDING,
+                status=CheckoutStatus.PAYMENT_INITIATED,
             )
             logger.info(
                 "Checkout finalised",
                 checkout_id=checkout.id,
                 total_amount=total_amount,
-                status=CheckoutStatus.PAYMENT_PENDING,
+                status=CheckoutStatus.PAYMENT_INITIATED,
             )
 
             # Step 7: Commit all flushes atomically

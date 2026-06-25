@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from models.checkout import Checkout
+from config.logger import logger
 from utils.enums import CheckoutStatus
 from utils.common.custom_exception import DatabaseException, NotFoundException
 
@@ -20,32 +21,43 @@ class CheckoutRepo:
             db.add(checkout)
             db.flush()
             db.refresh(checkout)
+            logger.info("Checkout record created", checkout_id=checkout.id, user_id=user_id)
             return checkout
         except SQLAlchemyError as e:
             db.rollback()
+            logger.error("Failed to create checkout", user_id=user_id, error=str(e))
             raise DatabaseException(message="Failed to create checkout", details=str(e))
 
     def get_by_id(self, db: Session, checkout_id: str) -> Checkout:
         try:
+            logger.debug("Fetching checkout by id", checkout_id=checkout_id)
             checkout = db.query(Checkout).filter(Checkout.id == checkout_id).first()
             if checkout is None:
+                logger.warning("Checkout not found", checkout_id=checkout_id)
                 raise NotFoundException(message=f"Checkout {checkout_id} not found")
             return checkout
         except NotFoundException:
             raise
         except SQLAlchemyError as e:
+            logger.error("Failed to fetch checkout by id", checkout_id=checkout_id, error=str(e))
             raise DatabaseException(message="Failed to fetch checkout by id", details=str(e))
 
     def get_by_user_id(self, db: Session, user_id: str) -> list[Checkout]:
         try:
-            return db.query(Checkout).filter(Checkout.user_id == user_id).all()
+            checkouts = db.query(Checkout).filter(Checkout.user_id == user_id).all()
+            logger.debug("Fetched checkouts by user", user_id=user_id, count=len(checkouts))
+            return checkouts
         except SQLAlchemyError as e:
+            logger.error("Failed to fetch checkouts by user", user_id=user_id, error=str(e))
             raise DatabaseException(message="Failed to fetch checkouts by user", details=str(e))
 
     def get_all(self, db: Session, skip: int = 0, limit: int = 100) -> list[Checkout]:
         try:
-            return db.query(Checkout).offset(skip).limit(limit).all()
+            checkouts = db.query(Checkout).offset(skip).limit(limit).all()
+            logger.debug("Fetched all checkouts", count=len(checkouts))
+            return checkouts
         except SQLAlchemyError as e:
+            logger.error("Failed to fetch checkouts", error=str(e))
             raise DatabaseException(message="Failed to fetch checkouts", details=str(e))
 
     def update(
@@ -63,11 +75,13 @@ class CheckoutRepo:
                 checkout.status = status
             db.flush()
             db.refresh(checkout)
+            logger.info("Checkout updated", checkout_id=checkout_id, total_amount=total_amount, status=status)
             return checkout
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
+            logger.error("Failed to update checkout", checkout_id=checkout_id, error=str(e))
             raise DatabaseException(message="Failed to update checkout", details=str(e))
 
     def update_status(self, db: Session, checkout_id: str, status: CheckoutStatus) -> Checkout:
@@ -76,11 +90,13 @@ class CheckoutRepo:
             checkout.status = status
             db.flush()
             db.refresh(checkout)
+            logger.info("Checkout status updated", checkout_id=checkout_id, status=status)
             return checkout
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
+            logger.error("Failed to update checkout status", checkout_id=checkout_id, error=str(e))
             raise DatabaseException(message="Failed to update checkout status", details=str(e))
 
     def delete(self, db: Session, checkout_id: str) -> None:
@@ -88,10 +104,12 @@ class CheckoutRepo:
             checkout = self.get_by_id(db, checkout_id)
             db.delete(checkout)
             db.flush()
+            logger.info("Checkout deleted", checkout_id=checkout_id)
         except (NotFoundException, DatabaseException):
             raise
         except SQLAlchemyError as e:
             db.rollback()
+            logger.error("Failed to delete checkout", checkout_id=checkout_id, error=str(e))
             raise DatabaseException(message="Failed to delete checkout", details=str(e))
 
     def get_with_user(self, db: Session, checkout_id: str) -> Optional[dict]:

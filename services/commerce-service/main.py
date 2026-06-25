@@ -86,6 +86,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.get("/health")
 async def health():
+    logger.info("Health check requested", service=server_config.name)
     data = {
         "service": server_config.name,
         "environment": server_config.environment,
