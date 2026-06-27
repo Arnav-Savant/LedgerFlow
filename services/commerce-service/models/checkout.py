@@ -12,6 +12,7 @@ class Checkout(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     total_amount: Mapped[int] = mapped_column(Integer(), nullable=False)
+    payment_session_id: Mapped[str] = mapped_column(String(36), nullable=True)
     status: Mapped[CheckoutStatus] = mapped_column(
         SAEnum(CheckoutStatus, name="checkout_status", create_type=False),
         nullable=False,

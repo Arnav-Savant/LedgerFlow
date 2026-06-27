@@ -27,6 +27,8 @@ class CheckoutInitiateResponse(BaseModel):
     user_id: str
     checkout_status: str
     total_amount: int
+    payment_session_id: str
+    redirect_url: str
     order_ids: list[str]
     orders: list[OrderSummary]
 

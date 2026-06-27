@@ -60,6 +60,26 @@ class CheckoutRepo:
             logger.error("Failed to fetch checkouts", error=str(e))
             raise DatabaseException(message="Failed to fetch checkouts", details=str(e))
 
+    def set_payment_session(
+        self,
+        db: Session,
+        checkout_id: str,
+        payment_session_id: str,
+    ) -> Checkout:
+        try:
+            checkout = self.get_by_id(db, checkout_id)
+            checkout.payment_session_id = payment_session_id
+            db.flush()
+            db.refresh(checkout)
+            logger.info("Checkout payment_session_id set", checkout_id=checkout_id, payment_session_id=payment_session_id)
+            return checkout
+        except (NotFoundException, DatabaseException):
+            raise
+        except SQLAlchemyError as e:
+            db.rollback()
+            logger.error("Failed to set payment_session_id on checkout", checkout_id=checkout_id, error=str(e))
+            raise DatabaseException(message="Failed to set payment session on checkout", details=str(e))
+
     def update(
         self,
         db: Session,

@@ -10,6 +10,7 @@ class ServerConfig(BaseSettings):
     reload: bool = True
     log_level: str = "INFO"
     api_v1_prefix: str = "/api/v1"
+    payment_session_expiry_seconds: int = 900  # 15 minutes; override via APP_PAYMENT_SESSION_EXPIRY_SECONDS
 
     model_config = SettingsConfigDict(
         env_file=".env",

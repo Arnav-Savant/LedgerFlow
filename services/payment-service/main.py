@@ -6,6 +6,9 @@ from config.logger import logger
 from utils.common.custom_exception import AppException
 from utils.common.error_response import ErrorResponse
 from utils.common.success_response import SuccessResponse
+from middleware.request_logger import RequestLoggerMiddleware
+from middleware.user_validation import UserValidationMiddleware
+from routes.payment_session_routes import router as payment_session_router
 import uvicorn
 
 
@@ -39,7 +42,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Middleware ────────────────────────────────────────────────────────────────
+# Starlette evaluates middleware in reverse registration order — the last
+# middleware added runs first on the way in and last on the way out.
+# Execution order for a request:
+#   UserValidationMiddleware → RequestLoggerMiddleware → route handler
+app.add_middleware(RequestLoggerMiddleware)
+app.add_middleware(UserValidationMiddleware)
+
 _API_PREFIX = "/api/v1"
+app.include_router(payment_session_router, prefix=_API_PREFIX)
 
 
 # ── Global exception handlers ─────────────────────────────────────────────────

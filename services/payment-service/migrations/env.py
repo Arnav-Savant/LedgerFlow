@@ -20,6 +20,19 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+VERSION_TABLE = "payment_alembic_version"
+
+def include_object(obj, name, type_, reflected, compare_to):
+    """Restrict autogenerate to tables owned by the payment service only.
+
+    Derives the owned table set from Base.metadata, which is populated by
+    `import models` above. Any model added to models/ is automatically
+    included; any removed model is automatically excluded — no manual list.
+    """
+    if type_ == "table" and name not in target_metadata.tables:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
@@ -28,6 +41,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        version_table=VERSION_TABLE,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -43,6 +58,8 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            version_table=VERSION_TABLE,
+            include_object=include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

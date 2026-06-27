@@ -10,6 +10,8 @@ class ServerConfig(BaseSettings):
     reload: bool = True
     log_level: str = "INFO"
     api_v1_prefix: str = "/api/v1"
+    payment_service_host: str = "localhost"
+    payment_service_port: int = 8002
 
     model_config = SettingsConfigDict(
         env_file=".env",

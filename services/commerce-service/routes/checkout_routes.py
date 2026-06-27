@@ -55,6 +55,8 @@ def initiate_checkout(
             user_id=checkout.user_id,
             checkout_status=checkout.status.value if hasattr(checkout.status, "value") else checkout.status,
             total_amount=checkout.total_amount,
+            payment_session_id=result["payment_session_id"],
+            redirect_url=result["redirect_url"],
             order_ids=[o.id for o in orders],
             orders=[_build_order_summary(o) for o in orders],
         )
