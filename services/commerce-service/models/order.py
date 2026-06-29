@@ -26,5 +26,6 @@ class Order(TimestampMixin, Base):
         SAEnum(CheckoutStatus, name="checkout_status", create_type=False),
         nullable=False,
     )
+    quantity: Mapped[int] = mapped_column(Integer(), nullable=False, default=1)
     ledger_updated: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     wallet_updated: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)

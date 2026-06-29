@@ -9,6 +9,14 @@ class PaymentStatus(str, enum.Enum):
     REFUND_INITIATED = "REFUND_INITIATED"
     REFUNDED = "REFUNDED"
     CANCELLED = "CANCELLED"
+    SUCCESS = "SUCCESS"
+    EXPIRED = "EXPIRED"
+
+
+class AttemptStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
 
 
 class PaymentMethod(str, enum.Enum):

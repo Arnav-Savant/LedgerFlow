@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -38,4 +39,17 @@ class CheckoutDetailResponse(BaseModel):
     user_id: str
     checkout_status: str
     total_amount: int
+    payment_session_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     orders: list[OrderSummary]
+
+
+class CheckoutListItemResponse(BaseModel):
+    checkout_id: str
+    user_id: str
+    checkout_status: str
+    total_amount: int
+    payment_session_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None

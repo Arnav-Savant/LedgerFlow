@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -8,6 +8,7 @@ from schema.checkout_schema import (
     CheckoutInitiateRequest,
     CheckoutInitiateResponse,
     CheckoutDetailResponse,
+    CheckoutListItemResponse,
     OrderSummary,
 )
 from service.checkout_service import CheckoutService
@@ -44,6 +45,7 @@ def initiate_checkout(
 ):
     checkout_service = CheckoutService()
     try:
+        logger.info("Initiate checkout requested", user_id=request.user_id)
         products = [{"product_id": p.product_id, "quantity": p.quantity} for p in request.products]
         result = checkout_service.initiate_checkout(db, request.user_id, products)
 
@@ -66,7 +68,7 @@ def initiate_checkout(
         logger.error(
             "AppException in initiate_checkout",
             error=exc.error,
-            message=exc.message,
+            detail=exc.message,
             status_code=exc.status_code,
         )
         return JSONResponse(
@@ -81,10 +83,38 @@ def initiate_checkout(
         )
 
 
+@router.get("/", status_code=200)
+def list_checkouts(skip: int = Query(0), limit: int = Query(100), db: Session = Depends(get_db)):
+    try:
+        logger.info("Checkout list requested", skip=skip, limit=limit)
+        checkouts = CheckoutService().get_all_checkouts(db, skip=skip, limit=limit)
+        data = [
+            CheckoutListItemResponse(
+                checkout_id=c.id,
+                user_id=c.user_id,
+                checkout_status=c.status.value if hasattr(c.status, "value") else c.status,
+                total_amount=c.total_amount,
+                payment_session_id=c.payment_session_id,
+                created_at=c.created_at.isoformat() if c.created_at else None,
+                updated_at=c.updated_at.isoformat() if c.updated_at else None,
+            ).model_dump()
+            for c in checkouts
+        ]
+        logger.info("Checkout list returned", count=len(data))
+        return SuccessResponse.ok(data=data, message="Checkouts fetched successfully")
+    except AppException as exc:
+        logger.error("AppException in list_checkouts", error=exc.error, detail=exc.message)
+        return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
+    except Exception as exc:
+        logger.exception("Unhandled error in list_checkouts", error=str(exc))
+        return JSONResponse(status_code=500, content=ErrorResponse.internal_error().model_dump())
+
+
 @router.get("/{checkout_id}", status_code=200)
 def get_checkout(checkout_id: str, db: Session = Depends(get_db)):
     checkout_service = CheckoutService()
     try:
+        logger.info("Get checkout requested", checkout_id=checkout_id)
         checkout, orders = checkout_service.get_checkout(db, checkout_id)
 
         data = CheckoutDetailResponse(
@@ -92,6 +122,9 @@ def get_checkout(checkout_id: str, db: Session = Depends(get_db)):
             user_id=checkout.user_id,
             checkout_status=checkout.status.value if hasattr(checkout.status, "value") else checkout.status,
             total_amount=checkout.total_amount,
+            payment_session_id=checkout.payment_session_id,
+            created_at=checkout.created_at.isoformat() if checkout.created_at else None,
+            updated_at=checkout.updated_at.isoformat() if checkout.updated_at else None,
             orders=[_build_order_summary(o) for o in orders],
         )
         return SuccessResponse.ok(data=data.model_dump(), message="Checkout fetched successfully")
@@ -101,7 +134,7 @@ def get_checkout(checkout_id: str, db: Session = Depends(get_db)):
             "AppException in get_checkout",
             checkout_id=checkout_id,
             error=exc.error,
-            message=exc.message,
+            detail=exc.message,
             status_code=exc.status_code,
         )
         return JSONResponse(

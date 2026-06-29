@@ -19,6 +19,7 @@ class OrderRepo:
         amount: int,
         currency: Currency,
         checkout_status: CheckoutStatus,
+        quantity: int = 1,
     ) -> Order:
         try:
             order = Order(
@@ -31,6 +32,7 @@ class OrderRepo:
                 currency=currency,
                 order_status=OrderStatus.CREATED,
                 checkout_status=checkout_status,
+                quantity=quantity,
                 ledger_updated=False,
                 wallet_updated=False,
             )

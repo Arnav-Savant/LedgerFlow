@@ -2,7 +2,7 @@
 
 > **Audience:** AI coding agents, new contributors, and the author returning after time away.
 > **Scope:** Commerce microservice only. For system-wide architecture see `docs/project_structure.md`.
-> **Status:** Active development — v1 service layer, routes, schemas, and middleware are implemented.
+> **Status:** Active development — v1 service layer, routes, schemas, and middleware are implemented. Full CRUD APIs for all entities and UI-facing endpoints are available.
 
 ---
 
@@ -30,8 +30,16 @@ The following capabilities are implemented:
 - **Health endpoint** — `GET /health` returns service name and environment without touching the database.
 - **User validation middleware** — `UserValidationMiddleware` intercepts `POST /api/v1/checkouts/initiate`, reads the request body, queries the user repository, and short-circuits with a structured 404 before the route handler executes if the user is not found.
 - **Checkout initiation API** — `POST /api/v1/checkouts/initiate` orchestrates the full synchronous checkout flow: checkout creation → inventory reservation → order creation → payment placeholder → status transitions.
-- **Checkout retrieval API** — `GET /api/v1/checkouts/{checkout_id}` returns checkout state with all associated orders.
+- **Checkout retrieval API** — `GET /api/v1/checkouts/{checkout_id}` returns checkout state with all associated orders, payment_session_id, and timestamps.
+- **Checkout list API** — `GET /api/v1/checkouts/` returns all checkouts ordered by creation time.
 - **Order retrieval API** — `GET /api/v1/orders/{order_id}` returns order details enriched with product information.
+- **Order list API** — `GET /api/v1/orders/` returns all orders enriched with `product_name` and `seller_name`.
+- **User CRUD APIs** — `POST`, `GET /`, `GET /{id}`, `PUT /{id}`, `DELETE /{id}` under `/api/v1/users/`.
+- **Seller CRUD APIs with soft delete** — same pattern under `/api/v1/sellers/`. `DELETE /{id}` sets `is_active=False`, never removes the row.
+- **Product CRUD APIs with soft deactivate** — same pattern under `/api/v1/products/`. `DELETE /{id}` sets `is_active=False`.
+- **Inventory APIs** — `GET /api/v1/inventory/` (all rows), `GET /api/v1/inventory/product/{product_id}` (by product), `POST /api/v1/inventory/product/{product_id}/adjust` (adjust available quantity by delta).
+- **Dashboard counts API** — `GET /api/v1/dashboard/counts` returns aggregate totals for the engineering UI.
+- **CORS middleware** — `CORSMiddleware` registered in `main.py` before all other middleware; allows all origins for local development.
 
 ---
 
@@ -92,6 +100,12 @@ The six entities are: `User`, `Seller`, `Product`, `Inventory`, `Checkout`, `Ord
 
 **Current `Checkout` schema** (after migrations): `id`, `user_id`, `total_amount`, `status`, `created_at`, `updated_at`. The columns `product_id`, `seller_id`, `coupon_id`, and `final_amount` have been removed via three successive migrations. Product and seller associations now live exclusively on the `Order` model.
 
+**`Seller` schema additions (migration `a3c7f891b2d4`):** `is_active: Boolean`, default `True`. Soft delete sets this to `False`; the row is never physically removed. All seller routes filter on `is_active` where relevant but return all sellers (including inactive) from the list endpoint so the UI can display historical state.
+
+**`Product` schema additions (migration `a3c7f891b2d4`):** `is_active: Boolean`, default `True`. Same soft-delete semantics as sellers. The product creation service validates that the parent seller is active before allowing creation.
+
+**`Order` schema additions (migration `a3c7f891b2d4`):** `quantity: Integer`, default `1`. Stores the number of units purchased for this product in the checkout.
+
 ### `repository/`
 
 One repository class per entity. Each repository is a stateless class that accepts a `Session` as the first argument to every method. **Repos are not instantiated at module level** — each service creates its own repo instance in `__init__`.
@@ -107,7 +121,18 @@ Key repository methods beyond standard CRUD:
 - `InventoryRepo.commit_reservation(product_id, quantity)` — consumes reserved stock on payment success.
 - `CheckoutRepo.update(checkout_id, total_amount, status)` — partial update for total_amount and/or status.
 - `CheckoutRepo.get_with_user(checkout_id)` — raw SQL join returning checkout + user fields as a dict.
+- `CheckoutRepo.get_all(db, skip, limit)` — returns all checkouts ordered by creation time.
 - `OrderRepo.get_all_by_checkout_id(checkout_id)` — returns all orders for a given checkout (list).
+- `OrderRepo.get_all(db, skip, limit)` — returns all orders (used for list endpoint and dashboard counts).
+- `OrderRepo.create(db, ..., quantity)` — now accepts `quantity: int = 1` parameter.
+- `UserRepo.get_all(db, skip, limit)` — returns all users.
+- `SellerRepo.get_all(db, skip, limit)` — returns all sellers (active and inactive).
+- `SellerRepo.update(db, seller_id, **kwargs)` — partial update; used to set `is_active=False` for soft delete.
+- `ProductRepo.get_all(db, skip, limit)` — returns all products.
+- `ProductRepo.update(db, product_id, **kwargs)` — partial update; used to set `is_active=False` for soft deactivate.
+- `InventoryRepo.get_all(db, skip, limit)` — returns all inventory rows.
+- `InventoryRepo.get_by_product_id(db, product_id)` — returns the inventory row for a specific product.
+- `InventoryRepo.adjust_available(db, product_id, delta)` — adds `delta` to `available_quantity` (negative delta reduces stock).
 
 ### `migrations/`
 
@@ -122,6 +147,7 @@ Migration chain:
 2. `5fd91ec51db1_remove_product_id_from_checkouts.py` — removes `product_id` FK from checkouts.
 3. `57fcfdb642c2_remove_seller_id_from_checkouts.py` — removes `seller_id` from checkouts.
 4. `59d17e6243b9_remove_discounted_pricing_from_checkouts.py` — removes `coupon_id` and `final_amount` from checkouts.
+5. `a3c7f891b2d4_add_active_flags_and_quantity.py` — adds `is_active` (Boolean, default True) to `sellers` and `products`; adds `quantity` (Integer, default 1) to `orders`. Chains off migration 4 (`b4f25abad163`).
 
 ### `seeders/`
 
@@ -164,13 +190,15 @@ except Exception as exc:
 
 Transaction ownership — only `checkout_service.initiate_checkout()` calls `db.commit()` and `db.rollback()`. All sub-service methods (`order_service.create_order`, `inventory_service.reserve`, etc.) flush only — they participate in the caller's transaction.
 
-- `user_service.py` — wraps `UserRepo`; used by middleware and checkout orchestration. Read-only currently.
-- `product_service.py` — wraps `ProductRepo`; product lookup for checkout and order enrichment. Read-only.
-- `inventory_service.py` — wraps `InventoryRepo`; exposes `reserve`, `release`, `commit_reservation`. Flush-only (no commit) — called within checkout transaction.
+- `user_service.py` — wraps `UserRepo`. Methods: `create(db, name, email, phone)`, `get_all(db, skip, limit)`, `get_by_id(db, user_id)`, `update(db, user_id, **kwargs)`, `delete(db, user_id)`. Used by middleware, routes, and checkout orchestration.
+- `seller_service.py` — wraps `SellerRepo`. Methods: `create(db, name, email)`, `get_all(db, skip, limit)`, `get_by_id(db, seller_id)`, `update(db, seller_id, **kwargs)`, `disable(db, seller_id)` (soft delete — sets `is_active=False`). `create` raises `ConflictException` if email already in use.
+- `product_service.py` — wraps `ProductRepo` and uses `SellerService`. Methods: `create(db, seller_id, name, price, currency)`, `get_all(db, skip, limit)`, `get_by_id(db, product_id)`, `update(db, product_id, **kwargs)`, `deactivate(db, product_id)` (soft delete). `create` raises `ValidationException` if the seller is inactive.
+- `inventory_service.py` — wraps `InventoryRepo`. Methods: `get_all(db, skip, limit)`, `get_by_product_id(db, product_id)`, `adjust_available(db, product_id, delta)`, `reserve(db, product_id, quantity)`, `release(db, product_id, quantity)`, `commit_reservation(db, product_id, quantity)`. All mutation methods flush only — called within checkout transaction.
 - `order_service.py` — wraps `OrderRepo` and uses `ProductService`. Has two categories of methods:
-  - **Internal mutation methods** (`create_order`, `update_order_status`, `get_orders_by_checkout_id`) — called from `checkout_service`, flush-only, no commit.
-  - **Public read methods** (`get_by_id`) — called from order routes, returns order enriched with product details.
-- `checkout_service.py` — owns the full checkout initiation transaction. Holds `self.checkout_repo`, `self.order_service`, `self.product_service`, `self.inventory_service`. Calls `db.commit()` on success and `db.rollback()` on any failure. Never accesses `OrderRepo`, `ProductRepo`, or `InventoryRepo` directly.
+  - **Internal mutation methods** (`create_order(db, ..., quantity)`, `update_order_status`, `get_orders_by_checkout_id`) — called from `checkout_service`, flush-only, no commit.
+  - **Public read methods** (`get_by_id`, `get_all(db, skip, limit)`) — called from order routes. `get_all` enriches each order with `product_name` (via `ProductService.get_by_id`) and `seller_name` (via `SellerService.get_by_id`), returns `list[dict]`.
+- `checkout_service.py` — owns the full checkout initiation transaction. Holds `self.checkout_repo`, `self.order_service`, `self.product_service`, `self.inventory_service`. Methods: `initiate_checkout(db, user_id, products)` (full orchestration with `db.commit()`), `get_checkout(db, checkout_id)`, `get_all_checkouts(db, skip, limit)`. Passes `quantity` per product line through to `order_service.create_order`.
+- `dashboard_service.py` — wraps all five repos (`UserRepo`, `SellerRepo`, `ProductRepo`, `CheckoutRepo`, `OrderRepo`). Single method: `get_counts(db)` — loads all rows and returns aggregate count dict. Routes must not call repos directly; all dashboard data flows through this service.
 
 Note: stub files with hyphenated names (`checkout-service.py`, etc.) exist from initial scaffolding and are not importable. The implemented files use underscores.
 
@@ -178,29 +206,52 @@ Note: stub files with hyphenated names (`checkout-service.py`, etc.) exist from 
 
 Pydantic request/response models:
 
-- `checkout_schema.py` — `CheckoutInitiateRequest`, `ProductItem`, `CheckoutInitiateResponse`, `CheckoutDetailResponse`, `OrderSummary`.
-- `order_schema.py` — `OrderDetailResponse`, `ProductDetail`.
+- `checkout_schema.py` — `CheckoutInitiateRequest`, `ProductItem`, `CheckoutInitiateResponse`, `CheckoutDetailResponse` (includes `payment_session_id`, `created_at`, `updated_at`), `CheckoutListItemResponse` (flat summary for list endpoint), `OrderSummary`.
+- `order_schema.py` — `OrderDetailResponse`, `ProductDetail`, `OrderListItemResponse` (enriched with `product_name`, `seller_name`, `quantity`).
+- `user_schema.py` — `CreateUserRequest` (name, email, optional phone), `UpdateUserRequest` (all optional fields), `UserResponse`.
+- `seller_schema.py` — `CreateSellerRequest` (name, email), `UpdateSellerRequest` (all optional), `SellerResponse` (includes `is_active`).
+- `product_schema.py` — `CreateProductRequest` (seller_id, name, price, currency), `UpdateProductRequest` (optional name, price), `ProductResponse` (includes `is_active`).
+- `inventory_schema.py` — `InventoryResponse` (inventory_id, product_id, available_quantity, reserved_quantity, updated_at), `AdjustInventoryRequest` (delta: int).
+- `dashboard_schema.py` — `DashboardCountsResponse` (total_users, total_sellers, total_active_sellers, total_products, total_active_products, total_checkouts, total_orders).
 
 ### `routes/`
 
-FastAPI route handlers. Every handler owns its own try/except and returns structured responses for both success and failure:
+FastAPI route handlers. Every handler follows this exact pattern:
 
 ```python
-@router.post("/initiate")
-def initiate_checkout(request, db):
+@router.post("/")
+def create_entity(request: CreateEntityRequest, db: Session = Depends(get_db)):
     try:
-        result = checkout_service.initiate_checkout(...)
-        return SuccessResponse.created(data=..., message="...")
+        logger.info("Create entity requested", email=request.email)  # log at entry
+        entity = EntityService().create(db, ...)
+        data = EntityResponse(...)                                    # validate through schema
+        logger.info("Entity created", entity_id=entity.id)           # log on success
+        return SuccessResponse.created(data=data.model_dump(), message="...")
     except AppException as exc:
+        logger.error("AppException in create_entity", error=exc.error, message=exc.message)
         return JSONResponse(status_code=exc.status_code,
                             content=ErrorResponse.from_exception(exc).model_dump())
     except Exception as exc:
+        logger.exception("Unhandled error in create_entity", error=str(exc))
         return JSONResponse(status_code=500,
                             content=ErrorResponse.internal_error().model_dump())
 ```
 
-- `checkout_routes.py` — `POST /checkouts/initiate`, `GET /checkouts/{checkout_id}`. Registered under `/api/v1` prefix. Contains a comment block explaining that user validation for `POST /initiate` is handled entirely by `UserValidationMiddleware` before this handler executes.
-- `order_routes.py` — `GET /orders/{order_id}`. Registered under `/api/v1` prefix.
+**Rules every route handler must follow:**
+1. `logger.info(...)` at the start of every handler with request context (id, email, etc.)
+2. Call only the owning service — never import or call a repository directly from a route.
+3. Serialize every response through a Pydantic schema; return `schema.model_dump()`, never a raw dict.
+4. `logger.info(...)` after the successful service call with result context (count, created id, etc.)
+5. `logger.error(...)` in the `AppException` except block.
+6. `logger.exception(...)` in the bare `Exception` except block (captures stack trace).
+
+- `checkout_routes.py` — `GET /checkouts/` (list, ordered by `created_at` desc), `POST /checkouts/initiate`, `GET /checkouts/{checkout_id}` (now returns `payment_session_id`, `created_at`, `updated_at`). Registered under `/api/v1` prefix. User validation for `POST /initiate` is handled by `UserValidationMiddleware`.
+- `order_routes.py` — `GET /orders/` (list all, enriched with `product_name` and `seller_name`), `GET /orders/{order_id}`. Registered under `/api/v1` prefix.
+- `user_routes.py` — `POST /users/`, `GET /users/`, `GET /users/{user_id}`, `PUT /users/{user_id}`, `DELETE /users/{user_id}`. Full CRUD. `POST` uses `ConflictException` (409) if email is already taken.
+- `seller_routes.py` — `POST /sellers/`, `GET /sellers/`, `GET /sellers/{seller_id}`, `PUT /sellers/{seller_id}`, `DELETE /sellers/{seller_id}`. `DELETE` is a soft disable — sets `is_active=False`.
+- `product_routes.py` — `POST /products/`, `GET /products/`, `GET /products/{product_id}`, `PUT /products/{product_id}`, `DELETE /products/{product_id}`. `DELETE` is a soft deactivate. `POST` validates that `seller_id` references an active seller.
+- `inventory_routes.py` — `GET /inventory/` (all rows), `GET /inventory/product/{product_id}`, `POST /inventory/product/{product_id}/adjust` (body: `{delta: int}`).
+- `dashboard_routes.py` — `GET /dashboard/counts` returning `{total_users, total_sellers, total_active_sellers, total_products, total_active_products, total_checkouts, total_orders}`.
 
 The global exception handlers in `main.py` are a fallback only — under normal request processing all exceptions are caught by the route handlers.
 
@@ -210,7 +261,7 @@ The global exception handlers in `main.py` are a fallback only — under normal 
 
 ### `main.py`
 
-The application entry point and FastAPI app definition. Registers `UserValidationMiddleware` and includes both routers under the `/api/v1` prefix. Two global exception handlers are registered as a safety net for exceptions raised outside route handlers (middleware errors, lifespan failures). Both handlers return `ErrorResponse` serialized as `JSONResponse`. The `/health` endpoint returns `SuccessResponse.ok()` with service name, environment, and status. The lifespan hook runs migrations then seeders before the server begins accepting requests.
+The application entry point and FastAPI app definition. Registers `CORSMiddleware` (all origins, all methods) first, then `UserValidationMiddleware`. Includes seven routers under the `/api/v1` prefix: `checkout_router`, `order_router`, `user_router`, `seller_router`, `product_router`, `inventory_router`, `dashboard_router`. Two global exception handlers are registered as a safety net for exceptions raised outside route handlers. The `/health` endpoint returns service name, environment, and status. The lifespan hook runs migrations then seeders before the server begins accepting requests.
 
 ---
 
@@ -264,21 +315,94 @@ order_service.get_by_id()
 Route returns SuccessResponse.ok(OrderDetailResponse)
 ```
 
+### `GET /api/v1/checkouts/`
+
+```
+checkout_service.get_all_checkouts(skip, limit)
+  └─ checkout_repo.get_all()
+
+Route returns SuccessResponse.ok([CheckoutDetailResponse, ...])
+```
+
+### `GET /api/v1/orders/`
+
+```
+order_service.get_all(skip, limit)
+  ├─ order_repo.get_all()
+  └─ For each order: product_service.get_by_id() → enriches product_name, seller_name
+
+Route returns SuccessResponse.ok([{order_id, product_name, seller_name, quantity, amount, ...}, ...])
+```
+
+### `POST /api/v1/users/` / `GET /api/v1/users/` / `GET /api/v1/users/{id}` / `PUT /api/v1/users/{id}` / `DELETE /api/v1/users/{id}`
+
+```
+Route → UserService.[create|get_all|get_by_id|update|delete]()
+  └─ user_repo.[create|get_all|get_by_id|update|delete]()
+
+create raises ConflictException (409) if email already exists.
+delete raises NotFoundException (404) if user not found.
+All routes return SuccessResponse.ok/created(UserResponse)
+```
+
+### `DELETE /api/v1/sellers/{seller_id}` (soft disable)
+
+```
+Route → SellerService.disable(db, seller_id)
+  └─ seller_repo.update(db, seller_id, is_active=False)
+
+Sets is_active=False. The row is never deleted.
+Route returns SuccessResponse.ok({seller_id, is_active: False})
+```
+
+### `DELETE /api/v1/products/{product_id}` (soft deactivate)
+
+```
+Route → ProductService.deactivate(db, product_id)
+  └─ product_repo.update(db, product_id, is_active=False)
+
+Sets is_active=False. Route returns SuccessResponse.ok({product_id, is_active: False})
+```
+
+### `POST /api/v1/inventory/product/{product_id}/adjust`
+
+```
+Route body: {delta: int}  (positive = restock; negative = manual deduction)
+Route → InventoryService.adjust_available(db, product_id, delta)
+  └─ inventory_repo.adjust_available() → available_quantity += delta
+
+Commits at service layer. Route returns SuccessResponse.ok(InventoryResponse)
+```
+
+### `GET /api/v1/dashboard/counts`
+
+```
+Route queries UserRepo, SellerRepo, ProductRepo, CheckoutRepo, OrderRepo directly
+  (no service layer — read-only aggregate counts, no business logic)
+
+Returns:
+{
+  total_users, total_sellers, total_active_sellers,
+  total_products, total_active_products,
+  total_checkouts, total_orders
+}
+```
+
 ---
 
 ## Core Domain Concepts
 
 **User** — A buyer. Has an email (unique), name, and optional phone.
 
-**Seller** — A merchant listing products. Has an email (unique) and name.
+**Seller** — A merchant listing products. Has an email (unique) and name. Has `is_active` flag (default `True`). Soft-deleted sellers are set to `is_active=False` — their products and historical orders remain valid but no new products can be created under them.
 
-**Product** — A catalog item owned by a seller. Has a price stored in the smallest monetary denomination (paise for INR) and a currency.
+**Product** — A catalog item owned by a seller. Has a price stored in the smallest monetary denomination (paise for INR), a currency, and `is_active` flag. Cannot be created if the parent seller is inactive. Soft-deleted products remain visible in historical orders.
 
-**Inventory** — One row per product. Tracks `available_quantity` (sellable stock) and `reserved_quantity` (stock held for in-flight checkouts).
+**Inventory** — One row per product. Tracks `available_quantity` (sellable stock) and `reserved_quantity` (stock held for in-flight checkouts). Can be manually adjusted via the adjust endpoint (delta-based, positive or negative).
 
-**Checkout** — A session representing a buyer's intent to purchase one or more products. Carries `total_amount` and a `status`. The checkout is the parent entity for all orders created during that session. It does not directly reference products or sellers — that information lives on the orders. Status transitions: `PENDING → PAYMENT_PENDING` (on successful initiation), with future transitions to `PAYMENT_COMPLETED / PAYMENT_FAILED / EXPIRED / CANCELLED` driven by payment service events.
+**Checkout** — A session representing a buyer's intent to purchase one or more products. Carries `total_amount`, `status`, `payment_session_id` (set after payment session is created), and timestamps. The checkout is the parent entity for all orders created during that session. Status transitions: `PENDING → PAYMENT_PENDING` (on successful initiation), with future transitions to `PAYMENT_COMPLETED / PAYMENT_FAILED / EXPIRED / CANCELLED`.
 
-**Order** — One order per product line in a checkout. Created during checkout initiation. Carries `product_id`, `seller_id`, `amount`, `currency`, and status flags for downstream service acknowledgment (`ledger_updated`, `wallet_updated`). Status transitions: `CREATED → PAYMENT_PENDING` (during checkout initiation), with future transitions driven by payment events.
+**Order** — One order per product line in a checkout. Created during checkout initiation. Carries `product_id`, `seller_id`, `amount`, `currency`, `quantity`, and status flags for downstream service acknowledgment (`ledger_updated`, `wallet_updated`). `quantity` is stored at order creation time and reflects the purchased unit count.
 
 **CheckoutStatus values:** `PENDING`, `PAYMENT_INITIATED`, `PAYMENT_FAILED`, `PAYMENT_COMPLETED`, `EXPIRED`, `CANCELLED`
 
@@ -405,8 +529,15 @@ Repos are instantiated in the `__init__` of the service that owns them. Services
 - `utils/enums.py` — Python mirror of PostgreSQL enum types; must stay in sync with migration definitions
 
 **Implemented APIs:**
+- `POST /api/v1/users/` / `GET /api/v1/users/` / `GET /api/v1/users/{id}` / `PUT /api/v1/users/{id}` / `DELETE /api/v1/users/{id}` — full CRUD
+- `POST /api/v1/sellers/` / `GET /api/v1/sellers/` / `GET /api/v1/sellers/{id}` / `PUT /api/v1/sellers/{id}` / `DELETE /api/v1/sellers/{id}` — CRUD + soft disable
+- `POST /api/v1/products/` / `GET /api/v1/products/` / `GET /api/v1/products/{id}` / `PUT /api/v1/products/{id}` / `DELETE /api/v1/products/{id}` — CRUD + soft deactivate
+- `GET /api/v1/inventory/` / `GET /api/v1/inventory/product/{id}` / `POST /api/v1/inventory/product/{id}/adjust` — inventory read + adjust
+- `GET /api/v1/dashboard/counts` — aggregate entity counts for UI
+- `GET /api/v1/checkouts/` — list all checkouts
 - `POST /api/v1/checkouts/initiate` — checkout initiation with inventory reservation and order creation
-- `GET /api/v1/checkouts/{checkout_id}` — checkout state with associated orders
+- `GET /api/v1/checkouts/{checkout_id}` — checkout state with associated orders, payment_session_id, and timestamps
+- `GET /api/v1/orders/` — list all orders enriched with product_name and seller_name
 - `GET /api/v1/orders/{order_id}` — order details with product information
 
 **Major workflows not yet implemented:**
@@ -424,3 +555,7 @@ Repos are instantiated in the `__init__` of the service that owns them. Services
 6. **Always use `PGEnum(..., create_type=False)`** (not `sa.Enum`) in migration `op.create_table` calls for enum columns.
 7. **Always raise `AppException` subclasses** from service and repository layers — never return `None` to signal failure.
 8. **Never access a repository from a service that doesn't own it.** Cross-domain data access must go through the owning service layer.
+9. **Never call a repository directly from a route handler.** All data access in routes must go through the service layer. The only exception is middleware, which may use repos inline for lightweight validation.
+10. **Every route handler must log at entry** (`logger.info` with request context), on success, and in every except block (`logger.error` for `AppException`, `logger.exception` for bare `Exception`).
+11. **Every route response must be serialized through a Pydantic schema** — construct the schema object and call `.model_dump()`. Never return raw dicts or ORM objects.
+12. **Every service method must have a `logger.info` call** at entry with relevant context parameters. Use `logger.exception` in bare `except Exception` blocks to capture the stack trace.

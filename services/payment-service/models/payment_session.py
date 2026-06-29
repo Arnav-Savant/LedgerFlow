@@ -18,28 +18,24 @@ class PaymentSession(TimestampMixin, Base):
 
     # Cross-service reference — no DB-level FK constraint; commerce owns the user row
     user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-
-    amount: Mapped[str] = mapped_column(Integer, nullable=False)
-
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(
         PGEnum(Currency, name="currency", create_type=False),
         nullable=False,
     )
-
     status: Mapped[str] = mapped_column(
         PGEnum(PaymentStatus, name="payment_status", create_type=False),
         nullable=False,
         default=PaymentStatus.INITIATED,
     )
-
     payment_method: Mapped[Optional[str]] = mapped_column(
         PGEnum(PaymentMethod, name="payment_method", create_type=False),
         nullable=True,
     )
-
     redirect_url: Mapped[str] = mapped_column(String(2048), nullable=False)
-
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
     )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)

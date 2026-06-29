@@ -2,48 +2,44 @@
 
 > **Audience:** AI coding agents, new contributors, and the author returning after time away.
 > **Scope:** Payment microservice only. For system-wide architecture see `docs/project_structure.md`.
-> **Status:** Active development — config, models, repositories, payment session service, API, and middleware implemented.
+> **Status:** Active development — Payment Session lifecycle and Payment Attempt lifecycle fully implemented with dummy PSP simulation. Kafka, refunds, and outbox are out of scope for this iteration.
 
 ---
 
 ## Service Overview
 
-The payment service is the financial execution layer of the LedgerFlow platform. It owns everything related to *how* money moves: creating payment sessions for buyers, coordinating with external providers, tracking payment state transitions, and publishing the outcome events that allow commerce, ledger, and notification services to react.
+The payment service is the financial execution layer of the LedgerFlow platform. It owns everything related to *how* money moves: creating payment sessions for buyers, managing payment attempts against a dummy PSP, tracking state transitions, and (in future) publishing outcome events to commerce and ledger services.
 
-Its boundary starts where commerce ends. When commerce creates a checkout and its orders are ready for payment, commerce publishes a `CheckoutPaymentRequested` event. The payment service consumes this event, creates a `PaymentSession`, and returns a redirect URL to the buyer for payment completion. It does not know about products, sellers, inventory, or order line items — that domain belongs entirely to commerce.
+Its boundary starts where commerce ends. Commerce creates a checkout, calls the payment service to create a `PaymentSession`, stores the returned `session_id`, and redirects the frontend to the session URL. The payment service then owns the entire payment execution flow: session retrieval, attempt creation, PSP simulation, and terminal state management.
 
-The payment service is the sole owner of `PaymentSession` records. No other service writes to these tables.
+The payment service is the sole owner of `PaymentSession` and `PaymentAttempt` records.
 
 ---
 
 ## Current Scope
 
-The following is implemented:
+**Implemented:**
 
-- **Config layer** — `ServerConfig`, `PostgresConfig`, `AppLogger`, `database.py` with `get_db()` dependency. `ServerConfig` carries `payment_session_expiry_seconds` (default 900s / 15 min), overridable via `APP_PAYMENT_SESSION_EXPIRY_SECONDS` in `.env`.
-- **Shared contracts** — `AppException` hierarchy (including `PaymentException`), `SuccessResponse`, `ErrorResponse` in `utils/common/`.
-- **Enum definitions** — `PaymentStatus`, `PaymentMethod`, `Currency`, `RefundStatus` in `utils/enums.py`.
-- **ORM base** — `Base` (declarative base) and `TimestampMixin` in `models/base.py`.
-- **Models** — `User` (read-side mirror, no DB FK to commerce), `PaymentSession`.
-- **Repositories** — `UserRepo` (full CRUD), `PaymentSessionRepo` (create, get\_by\_id, get\_by\_checkout\_id, get\_all\_by\_user\_id, update\_status, delete).
-- **Alembic wiring** — `alembic.ini`, `migrations/env.py` with `include_object` filter (derives owned tables from `Base.metadata` automatically), separate `payment_alembic_version` table. First migration (`87f32a03d60c`) creates `payment_status`, `payment_method` enum types and `payment_sessions` table.
-- **`RequestLoggerMiddleware`** — logs method, path, client IP, status code, and elapsed time for every request.
-- **Payment session service** — `PaymentSessionService.initiate_session()` validates user, computes `expires_at` from `server_config.payment_session_expiry_seconds`, creates the session, commits the transaction.
-- **Payment session API** — `POST /api/v1/payment-sessions/initiate`.
-- **FastAPI app** — `main.py` with lifespan hook (migrations on startup), `RequestLoggerMiddleware`, global exception handlers, `GET /health`.
+- **Config layer** — `ServerConfig` carries `payment_session_expiry_seconds` (default 900s), `payment_session_max_attempts` (default 3), `psp_simulate_success` (optional bool; unset = random), `payment_frontend_base_url` (default `http://localhost:5173/payments/session`). All overridable via `.env`.
+- **Models** — `User` (read-side mirror), `PaymentSession` (with `attempt_count`, `max_attempts`), `PaymentAttempt`.
+- **Repositories** — `UserRepo`, `PaymentSessionRepo`, `PaymentAttemptRepo`.
+- **Services** — `UserService`, `PaymentSessionService`, `PaymentAttemptService`.
+- **Middleware** — `RequestLoggerMiddleware` (all routes), `UserValidationMiddleware` (session initiation only).
+- **APIs** — `GET /` (list all sessions), `POST /initiate` (session creation), `GET /{session_id}` (session detail + ui\_state), `POST /{session_id}/attempt` (attempt creation with idempotency).
+- **Business rules** — session expiry enforcement, max attempts cap, idempotency, PSP simulation, terminal state immutability.
+- **Alembic** — separate `payment_alembic_version` table; `include_object` auto-derived from `Base.metadata`.
 
 **Not yet implemented:**
-- Refund model, repository, service, routes
-- Payment capture / failure flows
-- Event consumption (`CheckoutPaymentRequested`)
-- Event publishing (`PaymentCaptured`, `PaymentFailed`)
-- Real payment provider integration (Razorpay / Stripe)
+- Kafka event publishing (`PaymentCaptured`, `PaymentFailed`)
+- Transactional outbox
+- Refunds
+- Commerce callbacks on payment outcome
+- Real PSP integration (Razorpay / Stripe)
+- Background workers (session expiry sweep)
 
 ---
 
 ## Architectural Overview
-
-The service follows the same layered architecture as the commerce service, with strict unidirectional dependency flow:
 
 ```
 HTTP layer (routes)  →  Service layer  →  Repository layer  →  Database
@@ -53,21 +49,16 @@ HTTP layer (routes)  →  Service layer  →  Repository layer  →  Database
                          Response envelopes
 ```
 
-All design principles from the commerce service apply here without exception.
+All design principles from the commerce service apply without exception. Key rules:
 
-**Key design principles in effect:**
-
-- **No business logic in repositories.** Repos are purely data access. State transitions and multi-step operations belong in the service layer.
-- **Every layer has try/except.** Repository methods catch `SQLAlchemyError` → re-raise as `DatabaseException`. Service methods catch `AppException` subclasses and re-raise unchanged; catch bare `Exception` → wrap as `ServiceException`. Route handlers catch `AppException` → return `ErrorResponse` with correct status code; catch bare `Exception` → return 500 `ErrorResponse`.
-- **Repos flush, services commit.** `db.flush()` in repositories. `db.commit()` / `db.rollback()` owned exclusively by the service layer.
-- **Services own object instantiation via `__init__`.** Each service creates its own repository instances in `__init__`. No module-level singleton repos. Routes create service instances inside each handler function.
-- **Service layer owns cross-domain coordination through services only.** A service may call other services but must never directly access a repository owned by another domain.
-- **Routes catch, not propagate.** Route handlers do not let exceptions bubble to the global exception handler. The global handlers in `main.py` are a safety net only.
-- **Singleton configuration objects.** `server_config` and `postgres_config` are module-level instances. `extra="ignore"` prevents cross-config contamination.
-- **Singleton logger.** `AppLogger` uses `__new__` to enforce a single instance.
-- **IDs as UUID strings.** All PKs and FKs are `VARCHAR(36)` storing standard UUID strings generated by the application via `str(uuid.uuid4())`.
-- **Money as integers.** All monetary amounts stored in smallest denomination (paise for INR). No floats for money anywhere.
-- **PostgreSQL enum types owned by Alembic.** All `ENUM` types created via `op.execute("CREATE TYPE ...")` in the migration. SQLAlchemy models use `create_type=False`.
+- **No business logic in repositories.** Repos are purely data access.
+- **Every layer has try/except.** Repo → `DatabaseException`. Service → re-raise `AppException`, wrap bare `Exception` as `ServiceException`. Route → `ErrorResponse` with correct status, never propagates to global handler.
+- **Repos flush, services commit.** Single `db.commit()` per top-level service operation. All repos call `db.flush()`.
+- **Services own cross-domain access via services only.** `PaymentAttemptService` accesses `PaymentSession` data through `PaymentSessionService`, never directly through `PaymentSessionRepo`. `PaymentSessionService` accesses user data through `UserService`. No service may touch another service's repository directly.
+- **Routes create service instances per-handler.** No module-level service singletons.
+- **Money as integers.** All amounts in smallest denomination.
+- **IDs as UUID strings.** `VARCHAR(36)`, application-generated.
+- **PGEnum with `create_type=False` in all migrations.** Enum types created via `op.execute("CREATE TYPE ...")`.
 
 ---
 
@@ -75,292 +66,395 @@ All design principles from the commerce service apply here without exception.
 
 ### `config/`
 
-Nothing outside `config/` reads environment variables directly.
-
-- `server_config.py` — `ServerConfig` reads `APP_*` prefixed variables. Key fields:
+- `server_config.py` — `ServerConfig` reads `APP_*` vars:
   - `name` — `payment-service`
   - `port` — `8002`
-  - `payment_session_expiry_seconds` — default `900` (15 min). Set via `APP_PAYMENT_SESSION_EXPIRY_SECONDS` in `.env` to change session TTL without a code deploy.
-- `postgres_config.py` — `PostgresConfig` reads `POSTGRES_*` prefixed variables. Exposes `sync_url` and `async_url`. Only `sync_url` is used currently.
-- `database.py` — Creates the SQLAlchemy `engine` and `SessionLocal` factory. Exposes `get_db()` as a FastAPI dependency.
-- `logger.py` — `AppLogger` singleton. Log lines follow the format `timestamp | LEVEL | payment-service | message | key=value ...`.
+  - `payment_session_expiry_seconds: int` — default `900`. Env: `APP_PAYMENT_SESSION_EXPIRY_SECONDS`.
+  - `payment_session_max_attempts: int` — default `3`. Env: `APP_PAYMENT_SESSION_MAX_ATTEMPTS`.
+  - `psp_simulate_success: Optional[bool]` — default `None` (random). Set `"true"` or `"false"` via `APP_PSP_SIMULATE_SUCCESS`.
+  - `payment_frontend_base_url: str` — default `http://localhost:5173/payments/session`. Env: `APP_PAYMENT_FRONTEND_BASE_URL`. Used as the base for `redirect_url` — the full URL becomes `{payment_frontend_base_url}/{session_id}`.
+- `postgres_config.py` — `PostgresConfig` reads `POSTGRES_*` vars.
+- `database.py` — `get_db()` FastAPI dependency.
+- `logger.py` — `AppLogger` singleton.
 
 ### `models/`
 
-- `base.py` — `Base` (declarative base) and `TimestampMixin` (`created_at`, `updated_at`). `onupdate` is ORM-layer only — raw SQL `UPDATE` statements must manually include `updated_at = now()`.
-- `user.py` — Read-side mirror of commerce's `User`. Exists so `UserRepo` can query the shared `users` table. No DB-level FK constraint to commerce. **Do not create a migration for this table** — commerce owns and creates it.
-- `payment_session.py` — `PaymentSession` with all 11 columns (see Core Domain Concepts).
-- `__init__.py` — Imports all model classes. Imported as a side effect in `migrations/env.py` to register models with `Base.metadata`. The `include_object` filter in `env.py` uses `Base.metadata.tables` to determine which tables belong to the payment service — `users` is therefore excluded because it is not in `PAYMENT_SERVICE_TABLES` (the filter is now derived dynamically, but `users` is intentionally omitted from `models/__init__.py`'s effect on autogenerate by the fact that commerce already owns it in the DB).
-
-> **Important:** `User` is imported in `models/__init__.py` for SQLAlchemy ORM query support, but the `include_object` filter in `migrations/env.py` must explicitly exclude the `users` table to prevent the payment service from generating migrations for it. The filter uses `target_metadata.tables`, so if `User` is registered with `Base.metadata`, `users` will appear there. Keep `User` out of `Base.metadata` by **not** importing it in `models/__init__.py` — use a separate import only in `repository/user_repo.py` directly.
+- `base.py` — `Base` + `TimestampMixin` (`created_at`, `updated_at`).
+- `user.py` — Read-side mirror of commerce's `User`. Not imported in `__init__.py` (keeps it out of `Base.metadata`, preventing spurious migrations).
+- `payment_session.py` — `PaymentSession`:
+  - `id: VARCHAR(36)` PK
+  - `checkout_id: VARCHAR(36)` — cross-service ref, no FK constraint
+  - `user_id: VARCHAR(36)` — cross-service ref, no FK constraint
+  - `amount: Integer` — smallest denomination
+  - `currency: PGEnum(currency)` — shared with commerce
+  - `status: PGEnum(payment_status)` — session lifecycle status
+  - `payment_method: PGEnum(payment_method)` — nullable, set when known
+  - `redirect_url: VARCHAR(2048)` — built using `session_id`
+  - `expires_at: DateTime(timezone=True)` — session TTL
+  - `attempt_count: Integer` — default 0, incremented with each attempt
+  - `max_attempts: Integer` — set at creation from config, immutable thereafter
+  - `created_at`, `updated_at` — from `TimestampMixin`
+- `payment_attempt.py` — `PaymentAttempt`:
+  - `id: VARCHAR(36)` PK
+  - `session_id: VARCHAR(36)` FK → `payment_sessions.id`
+  - `idempotency_key: VARCHAR(255)` — composite unique with `session_id`
+  - `payment_method: PGEnum(payment_method)`
+  - `status: PGEnum(attempt_status)` — `PENDING`, `SUCCESS`, `FAILED`
+  - `psp_reference: VARCHAR(255)` — nullable, dummy PSP transaction ID
+  - `failure_reason: VARCHAR(1024)` — nullable
+  - `created_at`, `updated_at`
+- `__init__.py` — imports `PaymentSession`, `PaymentAttempt`. **Do not import `User` here.**
 
 ### `repository/`
 
-One repository class per entity. Each accepts `Session` as the first argument to every method. All mutation methods use `db.flush()`. Every method wraps its body in `try/except SQLAlchemyError` → re-raises as `DatabaseException`.
-
-- `user_repo.py` — `UserRepo`: `create`, `get_by_id`, `get_by_email`, `get_all`, `update`, `delete`. Read-only in practice for the payment service (user records are written by commerce).
+- `user_repo.py` — `UserRepo`: read-only in practice for payment service.
 - `payment_session_repo.py` — `PaymentSessionRepo`:
-  - `create(db, checkout_id, user_id, amount, currency, redirect_url, expires_at, payment_method=None)` → `PaymentSession`
-  - `get_by_id(db, session_id)` → `PaymentSession` (raises `NotFoundException` if missing)
-  - `get_by_checkout_id(db, checkout_id)` → most recent `PaymentSession` or `None`
+  - `create(db, checkout_id, user_id, amount, currency, redirect_url, expires_at, max_attempts)` → `PaymentSession`
+  - `get_by_id(db, session_id)` → `PaymentSession` (raises `NotFoundException`)
+  - `get_by_checkout_id(db, checkout_id)` → `Optional[PaymentSession]`
   - `get_all_by_user_id(db, user_id, skip, limit)` → `list[PaymentSession]`
-  - `update_status(db, session_id, status, payment_method=None)` → `PaymentSession`
+  - `get_all(db, skip, limit)` → `list[PaymentSession]` — returns all sessions ordered by `created_at` descending. Used by the list endpoint.
+  - `update_status(db, session_id, status)` → `PaymentSession`
+  - `increment_attempt_count(db, session_id)` → `PaymentSession`
   - `delete(db, session_id)` → `None`
+- `payment_attempt_repo.py` — `PaymentAttemptRepo`:
+  - `create(db, session_id, idempotency_key, payment_method)` → `PaymentAttempt` (status=PENDING)
+  - `get_by_id(db, attempt_id)` → `PaymentAttempt` (raises `NotFoundException`)
+  - `get_by_idempotency_key(db, session_id, idempotency_key)` → `Optional[PaymentAttempt]`
+  - `get_all_by_session_id(db, session_id)` → `list[PaymentAttempt]`
+  - `update_status(db, attempt_id, status, psp_reference=None, failure_reason=None)` → `PaymentAttempt`
 
 ### `migrations/`
 
-- `env.py` — Alembic runtime. Imports `postgres_config` for URL injection and `import models` as side effect. Uses a separate version table (`payment_alembic_version`) so commerce and payment track their migration chains independently on the same database. `include_object` derives owned tables from `Base.metadata` — no manual table list to maintain.
-- `alembic.ini` — `script_location = migrations`. URL left blank, injected by `env.py`.
-- `versions/87f32a03d60c_added_payment_session_model.py` — Creates `payment_status` and `payment_method` PostgreSQL enum types (skips `currency` — already created by commerce) and the `payment_sessions` table with indexes on `checkout_id` and `user_id`.
-
-### `seeders/`
-
-No seed data for the payment service. All `PaymentSession` records originate from live request flows. Folder exists for structural consistency.
+- `env.py` — `include_object` derives owned tables from `Base.metadata`. Separate `payment_alembic_version` table.
+- `versions/87f32a03d60c` — initial: creates `payment_status`, `payment_method` enums and `payment_sessions` table.
+- `versions/<new>` — adds `SUCCESS`, `EXPIRED` to `payment_status`; adds `attempt_count`, `max_attempts` to `payment_sessions`; creates `attempt_status` enum; creates `payment_attempts` table.
 
 ### `utils/`
 
 #### `utils/enums.py`
 
-- `PaymentStatus` — `INITIATED`, `PENDING`, `CAPTURED`, `FAILED`, `REFUND_INITIATED`, `REFUNDED`, `CANCELLED`
-- `PaymentMethod` — `UPI`, `CARD`, `NET_BANKING`, `WALLET`
-- `Currency` — `INR`, `USD`, `GBP`, `EUR`, `JPY`
-- `RefundStatus` — `INITIATED`, `PROCESSED`, `FAILED`
+- `PaymentStatus` — **Session lifecycle**: `INITIATED`, `SUCCESS`, `FAILED`, `EXPIRED`, `CANCELLED`. Legacy values `PENDING`, `CAPTURED`, `REFUND_INITIATED`, `REFUNDED` remain in DB enum for backward compat but are not used for sessions.
+- `AttemptStatus` — **Attempt lifecycle**: `PENDING`, `SUCCESS`, `FAILED`.
+- `PaymentMethod` — `UPI`, `CARD`, `NET_BANKING`, `WALLET`.
+- `Currency` — `INR`, `USD`, `GBP`, `EUR`, `JPY`.
+- `RefundStatus` — `INITIATED`, `PROCESSED`, `FAILED` (future use).
 
 #### `utils/common/`
 
-- `custom_exception.py` — `AppException` base class and subclasses: `NotFoundException`, `ConflictException`, `ValidationException`, `DatabaseException`, `ServiceException`, `PaymentException` (HTTP 402, error code `PAYMENT_FAILED`).
-- `success_response.py` — `SuccessResponse` with `ok()` and `created()` classmethods.
-- `error_response.py` — `ErrorResponse` with `from_exception()` and `internal_error()` classmethods.
+- `custom_exception.py` — `AppException` hierarchy: `NotFoundException`, `ConflictException`, `ValidationException`, `DatabaseException`, `ServiceException`, `PaymentException`.
+- `success_response.py`, `error_response.py` — unchanged.
 
 ### `services/`
 
-Note: directory is named `services/` (plural), unlike commerce's `service/`. Do not rename.
+Note: directory is named `services/` (plural). Do not rename.
 
+- `user_service.py` — `UserService.get_by_id()`.
 - `payment_session_service.py` — `PaymentSessionService`:
-  - `__init__` creates `PaymentSessionRepo` and `UserRepo`.
+  - `__init__` — creates `PaymentSessionRepo`, `UserService`.
   - `initiate_session(db, checkout_id, user_id, amount, currency)`:
-    1. Calls `user_repo.get_by_id()` — raises `NotFoundException` if user does not exist.
+    1. Validates user via `UserService`.
     2. Computes `expires_at = now(UTC) + timedelta(seconds=server_config.payment_session_expiry_seconds)`.
-    3. Builds a dummy `redirect_url`.
-    4. Calls `payment_session_repo.create()`.
-    5. Calls `db.commit()`.
-    6. Returns the created `PaymentSession`.
-    7. On `AppException`: calls `db.rollback()` and re-raises.
-    8. On bare `Exception`: calls `db.rollback()` and raises `ServiceException`.
+    3. Builds `redirect_url = f"{server_config.payment_frontend_base_url}/{session.id}"` — uses **session id**, not checkout id. Defaults to `http://localhost:5173/payments/session/{session_id}`.
+    4. Creates session with `max_attempts = server_config.payment_session_max_attempts`.
+    5. Commits. Returns `{"session_id", "redirect_url"}`.
+  - `list_all(db, skip, limit)`:
+    1. Logs `logger.info("Fetching all payment sessions", ...)`.
+    2. Calls `payment_session_repo.get_all(db, skip, limit)`.
+    3. For each session: computes `ui_state`, `can_retry`, and serializes enum fields with `.value` (so `status` and `currency` are strings, not enum objects).
+    4. Returns `list[dict]` with fields: `session_id, checkout_id, user_id, status, amount, currency, attempt_count, max_attempts, expires_at, ui_state, can_retry, redirect_url, created_at`.
+    5. Route validates each dict through `PaymentSessionListItemResponse` before returning.
+  - `get_session(db, session_id)`:
+    1. Fetches session.
+    2. Checks expiry: if `now(UTC) > expires_at` and status not already terminal → updates status to `EXPIRED`, commits.
+    3. Fetches all attempts for the session.
+    4. Computes `ui_state` and `can_retry`.
+    5. Returns structured dict for the GET response.
+- `payment_attempt_service.py` — `PaymentAttemptService`:
+  - `__init__` — creates `PaymentAttemptRepo`, `PaymentSessionService`.
+  - `create_attempt(db, session_id, idempotency_key, payment_method)`:
+
+    **Validation (raises before any write):**
+    1. Fetch session — `NotFoundException` if missing.
+    2. If `now(UTC) > session.expires_at` and not terminal → update session to `EXPIRED`, commit, raise `ValidationException`.
+    3. If `session.status` in `{SUCCESS, FAILED, EXPIRED, CANCELLED}` → raise `ValidationException`.
+    4. If `session.attempt_count >= session.max_attempts` → raise `ValidationException`.
+
+    **Idempotency check:**
+    5. `attempt_repo.get_by_idempotency_key(db, session_id, idempotency_key)` → if found, return immediately (no write).
+
+    **Execution (all flushed, one commit at end):**
+    6. `attempt_repo.create()` → PENDING attempt.
+    7. `session_service.increment_attempt_count()`.
+    8. Simulate PSP via `_simulate_psp()` → `True` (success) or `False` (failure).
+    9. If success: `attempt_repo.update_status(PENDING→SUCCESS, psp_reference=<dummy>)`, `session_service.mark_success()`.
+    10. If failure: `attempt_repo.update_status(PENDING→FAILED, failure_reason=<reason>)`. If `attempt_count >= max_attempts`: `session_service.mark_failed()`.
+    11. `db.commit()`.
+    12. Returns `{"attempt_id", "status", "failure_reason", "session_status"}`.
+
+    **`_simulate_psp()`:** reads `server_config.psp_simulate_success`. If `True` → always succeed. If `False` → always fail. If `None` → `random.choice([True, False])`.
 
 ### `schema/`
 
 - `payment_session_schema.py`:
-  - `PaymentSessionInitiateRequest` — `checkout_id: str`, `user_id: str`, `amount: int`, `currency: Currency`.
-  - `PaymentSessionInitiateResponse` — `session_id: str`, `checkout_id: str`, `redirect_url: str`, `status: str`, `expires_at: datetime`.
+  - `PaymentSessionInitiateRequest` — `checkout_id`, `user_id`, `amount`, `currency`.
+  - `PaymentSessionInitiateResponse` — `session_id`, `redirect_url`.
+  - `AttemptSummary` — `attempt_id`, `status`, `failure_reason`, `created_at`.
+  - `PaymentSessionDetailResponse` — `session_id`, `status`, `amount`, `currency`, `payment_method`, `attempt_count`, `max_attempts`, `expires_at`, `ui_state`, `can_retry`, `attempts: list[AttemptSummary]`.
+  - `PaymentSessionListItemResponse` — `session_id`, `checkout_id`, `user_id`, `status`, `amount`, `currency`, `attempt_count`, `max_attempts`, `expires_at`, `ui_state`, `can_retry`, `redirect_url`, `created_at`. Used by the `GET /` list endpoint for schema-validated responses.
+- `payment_attempt_schema.py`:
+  - `PaymentAttemptRequest` — `idempotency_key: str`, `payment_method: PaymentMethod`.
+  - `PaymentAttemptResponse` — `attempt_id`, `status`, `failure_reason`, `session_status`.
 
 ### `routes/`
 
-- `payment_session_routes.py` — `APIRouter(prefix="/payment-sessions")`:
-  - `POST /initiate` — validates `PaymentSessionInitiateRequest`, calls `PaymentSessionService.initiate_session()`, returns `SuccessResponse.created(PaymentSessionInitiateResponse)`. Catches `AppException` → `ErrorResponse` with correct status code. Catches bare `Exception` → 500 `ErrorResponse`.
+- `payment_session_routes.py`:
+  - `GET /payment-sessions/` — list all sessions (`skip`/`limit` query params). Returns summary dicts ordered by `created_at` desc.
+  - `POST /payment-sessions/initiate` — create session. Guarded by `UserValidationMiddleware`.
+  - `GET /payment-sessions/{session_id}` — fetch session detail with `ui_state`.
+- `payment_attempt_routes.py`:
+  - `POST /payment-sessions/{session_id}/attempt` — create attempt (idempotent on `idempotency_key`).
 
 ### `middleware/`
 
-- `request_logger.py` — `RequestLoggerMiddleware` (`BaseHTTPMiddleware`). Intercepts every request. Logs method, path, and client IP on ingress. Logs method, path, status code, and elapsed milliseconds on egress. Registered in `main.py` and applied to all routes including `/health`.
+- `request_logger.py` — `RequestLoggerMiddleware` — all routes.
+- `user_validation.py` — `UserValidationMiddleware` — `POST /api/v1/payment-sessions/initiate` only.
 
 ### `main.py`
 
-FastAPI app entry point. Lifespan hook runs migrations before the server accepts traffic. `RequestLoggerMiddleware` registered and active for all routes. Global exception handlers as safety nets. `GET /health` returns service name, environment, and status. Runs on port `8002`.
+Registers `CORSMiddleware` (all origins, all methods) first, then `RequestLoggerMiddleware`, then `UserValidationMiddleware`. `CORSMiddleware` must be registered before the logger and user-validation middleware so preflight OPTIONS requests are handled without going through the full middleware stack. Includes both routers under `/api/v1`.
 
 ---
 
 ## Request and Data Flow
 
+### `GET /api/v1/payment-sessions/`
+
+```
+1. PaymentSessionService.list_all(db, skip, limit)
+   └─ payment_session_repo.get_all() — ordered by created_at desc
+2. Returns SuccessResponse.ok([{session_id, checkout_id, status, amount, ...}, ...])
+```
+
 ### `POST /api/v1/payment-sessions/initiate`
 
 ```
-1. RequestLoggerMiddleware — logs incoming request
-
-2. Route handler validates PaymentSessionInitiateRequest schema
-
-3. PaymentSessionService.initiate_session(checkout_id, user_id, amount, currency)
-   a. user_repo.get_by_id()                → 404 NotFoundException if user missing
-   b. expires_at = now(UTC) + timedelta(seconds=server_config.payment_session_expiry_seconds)
-   c. redirect_url = "https://pay.ledgerflow.dev/session/{checkout_id}"  [dummy]
-   d. payment_session_repo.create()        → flush PaymentSession (status=INITIATED)
+1. UserValidationMiddleware — validates user_id exists
+2. RequestLoggerMiddleware — logs request
+3. Route validates PaymentSessionInitiateRequest
+4. PaymentSessionService.initiate_session()
+   a. UserService.get_by_id()          → 404 if not found
+   b. expires_at = now(UTC) + expiry_seconds
+   c. payment_session_repo.create()    → INITIATED, attempt_count=0
+   d. redirect_url = "…/session/{session.id}"
    e. db.commit()
-
-4. Route returns SuccessResponse.created(PaymentSessionInitiateResponse)
-   {session_id, checkout_id, redirect_url, status, expires_at}
-
-5. RequestLoggerMiddleware — logs status code + elapsed ms
+5. Returns SuccessResponse.created({session_id, redirect_url})
 ```
 
-### `GET /health`
+### `GET /api/v1/payment-sessions/{session_id}`
 
 ```
-1. RequestLoggerMiddleware — logs incoming request
-2. Returns SuccessResponse.ok({service, environment, status})
-3. RequestLoggerMiddleware — logs 200 + elapsed ms
+1. RequestLoggerMiddleware — logs request
+2. PaymentSessionService.get_session()
+   a. payment_session_repo.get_by_id() → 404 if not found
+   b. If now(UTC) > expires_at and not terminal → update to EXPIRED, commit
+   c. payment_attempt_repo.get_all_by_session_id()
+   d. Compute ui_state + can_retry
+3. Returns SuccessResponse.ok(PaymentSessionDetailResponse)
 ```
+
+### `POST /api/v1/payment-sessions/{session_id}/attempt`
+
+```
+1. RequestLoggerMiddleware — logs request
+2. Route validates PaymentAttemptRequest (idempotency_key, payment_method)
+3. PaymentAttemptService.create_attempt()
+   a. Fetch session → 404 if not found
+   b. Expiry check → EXPIRED if past, ValidationException
+   c. Status check → ValidationException if terminal
+   d. Max attempts check → ValidationException
+   e. Idempotency check → return existing attempt if key exists (no write)
+   f. attempt_repo.create()                    → PENDING attempt (flush)
+   g. session_service.increment_attempt_count() (flush)
+   h. _simulate_psp()                           → True or False
+   i. attempt_repo.update_status()              → SUCCESS or FAILED (flush)
+   j. If SUCCESS: session_service.mark_success() (flush)
+      If FAILED + exhausted: session_service.mark_failed() (flush)
+   k. db.commit()
+4. Returns SuccessResponse.created({attempt_id, status, failure_reason, session_status})
+```
+
+---
+
+## `ui_state` Derivation
+
+Computed in `PaymentSessionService.get_session()`, returned in `PaymentSessionDetailResponse`.
+
+| Condition | `ui_state` | `can_retry` |
+|-----------|-----------|------------|
+| `now > expires_at` or `status == EXPIRED` | `EXPIRED` | `false` |
+| `status == SUCCESS` | `SUCCESS` | `false` |
+| `status == FAILED` (terminal) | `FAILED` | `false` |
+| `status == CANCELLED` | `FAILED` | `false` |
+| `status == INITIATED`, `attempt_count == 0` | `PAYMENT_PAGE` | `true` |
+| `status == INITIATED`, `attempt_count > 0` | `RETRY` | `true` |
+
+The frontend never infers state from raw fields — it reads `ui_state` directly.
 
 ---
 
 ## Core Domain Concepts
 
-**User** — Read-side reference to a commerce buyer. The `users` table is owned and written by the commerce service. The payment service queries it read-only to validate that a `user_id` in an initiation request actually exists.
+**PaymentSession** — The root entity for a payment. One checkout maps to one active session. Carries session-level state (`status`, `attempt_count`, `max_attempts`, `expires_at`). Is the parent of all `PaymentAttempt` records. Once `SUCCESS`, it is immutable with respect to payment execution.
 
-**PaymentSession** — A session representing a buyer's intent to complete payment for a checkout. One checkout maps to one active session in the happy path. Carries `amount`, `currency`, `status`, an optional `payment_method` (set when the buyer selects one), a `redirect_url` for the payment UI, and `expires_at` for TTL enforcement. Status starts at `INITIATED`.
+**PaymentAttempt** — One execution of the payment process. A session may have multiple attempts (up to `max_attempts`). Each attempt represents a single user action (one click of "Pay"). Idempotency is enforced per `(session_id, idempotency_key)`.
 
-**PaymentStatus transitions:**
-`INITIATED → PENDING → CAPTURED` (success path)
-`INITIATED → PENDING → FAILED` (provider rejection)
-`CAPTURED → REFUND_INITIATED → REFUNDED` (refund path)
-`INITIATED / PENDING → CANCELLED` (timeout / checkout expiry)
+**PaymentStatus (session):** `INITIATED` → `SUCCESS` (terminal) or `FAILED` (terminal). `EXPIRED` and `CANCELLED` are also terminal. A session with failed attempts and retries remaining stays `INITIATED`.
 
-**RefundStatus transitions:**
-`INITIATED → PROCESSED` (success)
-`INITIATED → FAILED` (provider rejection)
+**AttemptStatus:** `PENDING` → `SUCCESS` or `FAILED`.
 
-**Session expiry** — `expires_at` is `now(UTC) + payment_session_expiry_seconds`. Default is 900 seconds (15 minutes). Change via `APP_PAYMENT_SESSION_EXPIRY_SECONDS` in `.env` without a code deploy.
+**Session expiry** — TTL enforced lazily on read (`GET /payment-sessions/{session_id}`) and on write (`POST /{session_id}/attempt`). No background sweep yet.
+
+**Idempotency** — Same `(session_id, idempotency_key)` pair returns the existing attempt without DB write. Frontend generates a new key per retry, creating a new attempt.
+
+---
+
+## Business Rules
+
+1. Completed sessions (`SUCCESS`, `FAILED`, `EXPIRED`, `CANCELLED`) cannot create new attempts.
+2. Expired sessions are detected and marked `EXPIRED` on first access after TTL.
+3. `attempt_count >= max_attempts` prevents new attempts even if session is `INITIATED`.
+4. Duplicate `idempotency_key` for the same session returns the existing attempt (no duplicate record created).
+5. A successful attempt transitions the session to `SUCCESS` — no further attempts allowed.
+6. A failed attempt with retries remaining leaves the session `INITIATED`.
+7. A failed attempt that exhausts retries transitions the session to `FAILED` (terminal).
+8. All mutations for a single `create_attempt` call are committed in one transaction.
 
 ---
 
 ## Integration Points
 
-**Commerce service (event-driven, planned)**
-Commerce publishes `CheckoutPaymentRequested` when a checkout is ready. Payment consumes this event to call `PaymentSessionService.initiate_session()`. Payment publishes `PaymentCaptured` (triggers commerce to commit reservation and confirm orders) and `PaymentFailed` (triggers commerce to release inventory and cancel orders). Currently driven by direct HTTP calls.
+**Commerce service (synchronous HTTP, implemented)**
+Commerce calls `POST /api/v1/payment-sessions/initiate` during checkout. Payment service returns `session_id` and `redirect_url`. Commerce stores `payment_session_id` on the checkout row.
 
 **External payment providers (planned)**
-Razorpay or Stripe integration will live inside the service layer. The dummy `redirect_url` marks the integration point. Replace with a real provider URL once the provider SDK is integrated.
+Replace `_simulate_psp()` with a real Razorpay / Stripe SDK call. `psp_reference` stores the provider's transaction ID.
+
+**Event publishing (planned)**
+After `create_attempt` commits a terminal status, publish `PaymentSucceeded` or `PaymentFailed` to Kafka via transactional outbox. Commerce and ledger services consume these events to update order status and ledger entries.
 
 **PostgreSQL (primary store)**
-Same `ledgerflow` database as the commerce service. Payment owns `payment_sessions`. The `users` table is shared read-only. Cross-service references (`checkout_id`, `user_id`) are plain `VARCHAR(36)` with no DB-level FK constraints.
+Same `ledgerflow` database as commerce. Payment owns `payment_sessions` and `payment_attempts`. `users` table is shared read-only.
 
 ---
 
 ## Important Architectural Decisions
 
-**Session expiry via config, not hardcoded**
-`payment_session_expiry_seconds` lives in `ServerConfig` and is read from `APP_PAYMENT_SESSION_EXPIRY_SECONDS` in `.env`. The service layer reads `server_config.payment_session_expiry_seconds` at call time — never hardcodes `900` or `timedelta(minutes=15)` in business logic. This allows expiry to be changed per environment without a code change.
+**`redirect_url` is configurable via `payment_frontend_base_url`**
+The `redirect_url` returned on session initiation is built as `{payment_frontend_base_url}/{session_id}`. The base URL defaults to `http://localhost:5173/payments/session` (the local Vite dev server). Override `APP_PAYMENT_FRONTEND_BASE_URL` in `.env` for staging/production environments. The URL uses `session_id` (not `checkout_id`) so the frontend is decoupled from the commerce domain.
 
-**`expires_at` computed in the service layer**
-`expires_at` is calculated in `PaymentSessionService.initiate_session()`, not in the repository and not in the route handler. The service layer owns business rules; the repo only persists what it receives.
+**`max_attempts` stored on the session row**
+Set at creation from `server_config.payment_session_max_attempts`. Stored in the DB so changing the config does not retroactively affect in-flight sessions.
 
-**Cross-service foreign keys as plain strings**
-`payment_sessions.checkout_id` and `payment_sessions.user_id` reference rows owned by the commerce service. No DB-level FK constraints. Referential integrity is enforced at the application layer — the service validates user existence via `user_repo.get_by_id()` before creating the session.
+**Session expiry enforced lazily**
+`expires_at` is checked on every read and write. No background sweep. An expired session is marked `EXPIRED` on first access. This is acceptable for this iteration; a sweep worker should be added later to handle sessions that are never re-fetched.
 
-**`RequestLoggerMiddleware` on all routes**
-Every request — including `/health` — passes through `RequestLoggerMiddleware`. This is intentional: health checks from load balancers are useful signal for latency monitoring. The middleware logs ingress and egress separately so elapsed time is always captured even when the route handler raises an exception.
+**PSP simulation is synchronous**
+No background workers, no queues. The entire attempt lifecycle (create → PSP → update → commit) completes within the HTTP request. `PROCESSING` is therefore not a needed session status.
+
+**Idempotency at service layer, enforced by DB unique constraint**
+The service checks for an existing attempt before creating a new one. The DB unique constraint on `(session_id, idempotency_key)` is a safety net against concurrent race conditions.
+
+**`attempt_count` incremented before PSP call**
+This ensures that even if the PSP call itself fails with an exception (not a PSP failure response), the attempt count is still recorded and the session is protected from runaway retries.
 
 **Separate Alembic version table**
-`payment_alembic_version` keeps the payment service's migration history independent from commerce's `alembic_version` on the same database. Each service runs `alembic upgrade head` against its own chain without interfering with the other.
-
-**`include_object` derived from `Base.metadata`**
-`migrations/env.py` uses `target_metadata.tables` (populated by `import models`) to determine which tables belong to this service. Adding a new model to `models/__init__.py` automatically includes it in future autogenerate runs. Removing a model automatically excludes it. No manual table list to maintain.
-
-**Synchronous SQLAlchemy**
-Sync SQLAlchemy with `psycopg2-binary`. Deliberate simplicity tradeoff at this development stage.
+`payment_alembic_version` is independent from commerce's `alembic_version`.
 
 ---
 
 ## Operational Considerations
 
-**Configuration**
-All configuration via `.env` in the service root. Key env vars:
-- `APP_PAYMENT_SESSION_EXPIRY_SECONDS` — session TTL in seconds (default 900)
-- `POSTGRES_PORT` — 5433 (Docker Compose Postgres)
+**Configuration — key env vars**
+```
+APP_PAYMENT_SESSION_EXPIRY_SECONDS=900
+APP_PAYMENT_SESSION_MAX_ATTEMPTS=3
+APP_PSP_SIMULATE_SUCCESS=                                        # unset = random; "true" = always succeed; "false" = always fail
+APP_PAYMENT_FRONTEND_BASE_URL=http://localhost:5173/payments/session  # override for staging/prod
+```
 
 **Running the service**
 ```
 cd services/payment-service
 python main.py
-# or
-uvicorn main:app --reload
 ```
-Working directory must be `services/payment-service/`.
-
-**Port** — `8002` (commerce is `8001`).
-
-**Database bootstrap** — Same `ledgerflow` PostgreSQL instance. Migrations run automatically on startup.
-
-**Startup sequence** — Service will fail to start if PostgreSQL is not reachable. No retry logic.
+Port `8002`. PostgreSQL must be reachable on startup.
 
 ---
 
 ## Known Constraints
 
-- **Dummy redirect URL.** `redirect_url` is a static string. Replace with a real provider URL once Razorpay / Stripe is integrated.
-- **No session expiry enforcement.** `expires_at` is stored but not enforced — expired sessions are not rejected or cleaned up automatically. A background job or query-time check is needed.
-- **`User` model must not generate a migration.** `user_repo.py` imports `User` directly from `models/user.py`. Do not import `User` in `models/__init__.py` or it will appear in `Base.metadata` and the `include_object` filter may incorrectly include the `users` table in autogenerate output.
-- **No event consumption.** Payment initiation is triggered by direct HTTP POST, not by a `CheckoutPaymentRequested` event.
-- **`onupdate` is ORM-only.** Raw SQL `UPDATE` must manually set `updated_at = now()`.
-- **Enum drift risk.** PostgreSQL enum types, `PGEnum` instances in migrations, and Python enum classes in `utils/enums.py` must all be updated together.
-- **`services/` vs `service/`.** This service uses `services/` (plural).
+- **Dummy PSP.** `_simulate_psp()` uses random or config-driven outcomes. No real provider.
+- **Lazy expiry.** Expired sessions are only marked `EXPIRED` when accessed. A session that is never re-fetched after TTL remains `INITIATED` in the DB.
+- **No Kafka.** Payment outcome events are not published. Commerce and ledger services are not notified of payment results.
+- **Single currency per session.** Mixed-currency checkouts use the first product's currency.
+- **`User` model not in `Base.metadata`.** `user_repo.py` imports `User` directly from `models/user.py`. Never import it in `models/__init__.py`.
+- **`onupdate` is ORM-only.** Raw SQL `UPDATE` must set `updated_at = now()` manually.
+- **`services/` not `service/`.** Do not rename to match commerce.
 
 ---
 
 ## Development Notes
 
 **Adding a new model**
-1. Create `models/<name>.py` inheriting from `Base` and `TimestampMixin`.
-2. Import it in `models/__init__.py`.
-3. Run `alembic revision --autogenerate -m "description"` — the new table appears automatically via `include_object`.
-4. Review the generated file — fix enum columns to use `PGEnum(..., create_type=False)` and add `op.execute("CREATE TYPE ...")` manually.
+Create in `models/`, import in `models/__init__.py`, run `alembic revision --autogenerate`. Fix enum columns to use `PGEnum(..., create_type=False)` and add `op.execute("CREATE TYPE ...")` manually.
 
-**Changing session expiry**
-Edit `APP_PAYMENT_SESSION_EXPIRY_SECONDS` in `.env` and restart. No code change needed.
-
-**Adding a new enum value**
-Do not edit existing migration files. Create a new migration: `alembic revision -m "add_value_to_payment_status"`. Add the value to `utils/enums.py`.
+**Changing session expiry or max attempts**
+Edit `.env` and restart. Only affects newly created sessions — existing sessions retain the values stored on their row.
 
 **Error handling convention**
-1. **Repository** — catches `SQLAlchemyError` → `DatabaseException`. Domain failures raise `AppException` subclasses directly.
-2. **Service** — catches `AppException` → re-raises. Catches bare `Exception` → `ServiceException`. Calls `db.rollback()` in both failure paths before re-raising.
-3. **Routes** — catches `AppException` → `JSONResponse(exc.status_code, ErrorResponse.from_exception(exc))`. Catches bare `Exception` → `JSONResponse(500, ErrorResponse.internal_error())`.
-4. **Global handlers** — safety net only.
-
-**Response convention**
-All route handlers return `SuccessResponse.ok(data=...)` for reads and `SuccessResponse.created(data=...)` for creates.
-
-**Session management**
-Never hold a `Session` outside a repository method or middleware dispatch block. Services and repos must not store the session on `self`.
+1. Repo — `SQLAlchemyError` → `DatabaseException`. Domain failures raise `AppException` subclasses.
+2. Service — re-raises `AppException`; wraps bare `Exception` as `ServiceException`. Calls `db.rollback()` before re-raising.
+3. Routes — `AppException` → `JSONResponse(exc.status_code, ErrorResponse.from_exception(exc))`. Bare `Exception` → 500.
+4. Global handlers in `main.py` — safety net only.
 
 ---
 
 ## AI Agent Context
 
-**What this service does:** Creates and manages payment sessions for commerce checkouts. It is the entry point for financial transactions in the LedgerFlow platform.
+**What this service does:** Creates payment sessions for commerce checkouts, manages payment attempt lifecycle with idempotency, simulates PSP outcomes, enforces session business rules (expiry, max attempts, terminal state immutability).
 
 **Folder ownership:**
-- `config/` — infrastructure wiring only; no business logic
-- `models/` — schema declarations only; no query methods or business logic
-- `repository/` — all database I/O; one class per entity; every method must have try/except
-- `services/` — business orchestration; services may call other services but never another service's repository
-- `middleware/` — request interception; `RequestLoggerMiddleware` active on all routes
-- `schema/` — Pydantic request/response contracts; no business logic
-- `routes/` — thin HTTP handlers; call service methods and shape responses only
-- `migrations/` — owned by Alembic; only modify via `alembic revision` commands
-- `seeders/` — empty; no pre-seeded data
-- `utils/common/` — shared contracts (`AppException`, `SuccessResponse`, `ErrorResponse`)
-- `utils/enums.py` — Python mirror of PostgreSQL enum types; must stay in sync with migration definitions
+- `config/` — infrastructure wiring; no business logic
+- `models/` — schema only; no query logic on model classes
+- `repository/` — all DB I/O; every method has try/except
+- `services/` — orchestration; services call other services, never another service's repo
+- `middleware/` — `RequestLoggerMiddleware` (all), `UserValidationMiddleware` (initiate only)
+- `schema/` — Pydantic contracts; no business logic
+- `routes/` — thin handlers; shape request/response only
+- `migrations/` — Alembic only; never edit applied migrations
 
 **Implemented APIs:**
-- `GET /health` — service liveness check
-- `POST /api/v1/payment-sessions/initiate` — create a payment session for a checkout
+- `GET /api/v1/payment-sessions/` — list all sessions (skip/limit)
+- `POST /api/v1/payment-sessions/initiate` — create session (redirect_url uses configurable base URL)
+- `GET /api/v1/payment-sessions/{session_id}` — session detail with `ui_state`
+- `POST /api/v1/payment-sessions/{session_id}/attempt` — create attempt (idempotent)
+- `GET /health`
 
-**Major workflows not yet implemented:**
-- `GET /api/v1/payment-sessions/{session_id}` — fetch session details
-- `POST /api/v1/refunds/initiate` — initiate a refund
-- Payment capture / failure status updates
-- Session expiry enforcement
-- Event consumption: `CheckoutPaymentRequested`
-- Event publishing: `PaymentCaptured`, `PaymentFailed`
-- Real provider integration
-
-**Rules an AI agent must not break without understanding the wider impact:**
-1. **Never remove `create_type=False`** from any `SAEnum` or `PGEnum` column definition.
-2. **Never modify an existing migration file** to change already-applied schema. Create a new migration instead.
-3. **Never store a `Session` on a repository instance** — sessions are per-request, not per-singleton.
-4. **Always use `PGEnum(..., create_type=False)`** (not `sa.Enum`) in migration `op.create_table` calls for enum columns.
-5. **Always raise `AppException` subclasses** from service and repository layers — never return `None` to signal failure.
-6. **Never access a repository from a service that doesn't own it.**
-7. **Never add a database-level FK constraint** from `payment_sessions.checkout_id` or `payment_sessions.user_id` to the commerce schema.
-8. **Never rename `services/` to `service/`.**
-9. **Never import `User` in `models/__init__.py`** — it must not appear in `Base.metadata` or it will be included in autogenerate output and generate spurious migrations for the `users` table.
-10. **Never hardcode the session expiry duration** — always read from `server_config.payment_session_expiry_seconds`.
+**Rules an AI agent must not break:**
+1. Never remove `create_type=False` from `PGEnum`.
+2. Never modify an applied migration. Create a new one.
+3. Never store a `Session` on a repo instance.
+4. Never use `sa.Enum` in migrations — always `PGEnum(..., create_type=False)`.
+5. Never return `None` from service/repo to signal failure — raise `AppException` subclasses.
+6. Never access another service's repository directly.
+7. Never add DB-level FK constraints from `payment_sessions` to commerce tables.
+8. Never rename `services/` to `service/`.
+9. Never import `User` in `models/__init__.py`.
+10. Never hardcode session expiry, max attempts, PSP behavior, or `redirect_url` base — always read from `server_config`.
+11. Never allow a second attempt for a `SUCCESS` session — it is immutable.
+12. Never create a duplicate attempt for the same `(session_id, idempotency_key)` — return the existing one.
+13. Never call a repository directly from a route handler — all data access flows through the service layer.
+14. Every route handler must log at entry with `logger.info`, log on success, and log in all except blocks (`logger.error` for `AppException`, `logger.exception` for bare `Exception`).
+15. Every route response must be serialized through a Pydantic schema and returned via `.model_dump()` — never raw dicts.
+16. Every service method must call `logger.info` at entry with relevant context. Use `logger.exception` in bare `except Exception` blocks to capture the stack trace. Enum fields in returned dicts must be serialized with `.value` — never raw enum objects.

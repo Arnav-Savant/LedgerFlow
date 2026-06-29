@@ -19,6 +19,7 @@ class PaymentSessionRepo:
         currency: str,
         redirect_url: str,
         expires_at: datetime,
+        max_attempts: int,
         payment_method: Optional[PaymentMethod] = None,
     ) -> PaymentSession:
         try:
@@ -32,6 +33,8 @@ class PaymentSessionRepo:
                 payment_method=payment_method,
                 redirect_url=redirect_url,
                 expires_at=expires_at,
+                attempt_count=0,
+                max_attempts=max_attempts,
             )
             db.add(session)
             db.flush()
@@ -106,6 +109,21 @@ class PaymentSessionRepo:
                 message="Failed to fetch payment sessions for user", details=str(e)
             )
 
+    def get_all(self, db: Session, skip: int = 0, limit: int = 100) -> list[PaymentSession]:
+        try:
+            records = (
+                db.query(PaymentSession)
+                .order_by(PaymentSession.created_at.desc())
+                .offset(skip)
+                .limit(limit)
+                .all()
+            )
+            logger.debug("Fetched all PaymentSessions", count=len(records))
+            return records
+        except SQLAlchemyError as e:
+            logger.error("Failed to fetch all PaymentSessions", error=str(e))
+            raise DatabaseException(message="Failed to fetch payment sessions", details=str(e))
+
     def update_status(
         self,
         db: Session,
@@ -139,6 +157,28 @@ class PaymentSessionRepo:
                 error=str(e),
             )
             raise DatabaseException(message="Failed to update payment session status", details=str(e))
+
+    def increment_attempt_count(self, db: Session, session_id: str) -> PaymentSession:
+        try:
+            record = self.get_by_id(db, session_id)
+            record.attempt_count += 1
+            db.flush()
+            db.refresh(record)
+            logger.info(
+                "PaymentSession attempt_count incremented",
+                session_id=session_id,
+                attempt_count=record.attempt_count,
+            )
+            return record
+        except (NotFoundException, DatabaseException):
+            raise
+        except SQLAlchemyError as e:
+            logger.error(
+                "Failed to increment PaymentSession attempt_count",
+                session_id=session_id,
+                error=str(e),
+            )
+            raise DatabaseException(message="Failed to increment attempt count", details=str(e))
 
     def delete(self, db: Session, session_id: str) -> None:
         try:

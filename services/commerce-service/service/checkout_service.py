@@ -155,6 +155,7 @@ class CheckoutService:
                     "seller_id": product.seller_id,
                     "amount": amount,
                     "currency": product.currency,
+                    "quantity": quantity,
                 })
 
             # Step 3: Create one order per product
@@ -169,6 +170,7 @@ class CheckoutService:
                     amount=order_data["amount"],
                     currency=order_data["currency"],
                     checkout_status=checkout.status,
+                    quantity=order_data.get("quantity", 1),
                 )
                 created_orders.append(order)
                 logger.info("Order created", order_id=order.id, product_id=order_data["product_id"])
@@ -226,6 +228,18 @@ class CheckoutService:
             db.rollback()
             logger.exception("Unexpected error in initiate_checkout", user_id=user_id, error=str(exc))
             raise ServiceException(message="Failed to initiate checkout", details=str(exc))
+
+    def get_all_checkouts(self, db: Session, skip: int = 0, limit: int = 100) -> list[Checkout]:
+        try:
+            logger.info("Fetching all checkouts", skip=skip, limit=limit)
+            checkouts = self.checkout_repo.get_all(db, skip=skip, limit=limit)
+            logger.info("Checkouts fetched", count=len(checkouts))
+            return checkouts
+        except AppException:
+            raise
+        except Exception as exc:
+            logger.exception("Unexpected error fetching checkouts", error=str(exc))
+            raise ServiceException(message="Failed to fetch checkouts", details=str(exc))
 
     def get_checkout(self, db: Session, checkout_id: str) -> tuple[Checkout, list[Order]]:
         try:

@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import String, Integer, Enum as SAEnum, ForeignKey
+from sqlalchemy import String, Integer, Boolean, Enum as SAEnum, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from models.base import Base, TimestampMixin
 from utils.enums import Currency
@@ -15,3 +15,4 @@ class Product(TimestampMixin, Base):
     currency: Mapped[Currency] = mapped_column(
         SAEnum(Currency, name="currency", create_type=False), nullable=False
     )
+    is_active: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=True)

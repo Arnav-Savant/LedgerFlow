@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from config.server_config import server_config
 from config.logger import logger
 from utils.common.custom_exception import AppException
@@ -9,6 +10,11 @@ from utils.common.success_response import SuccessResponse
 from middleware.user_validation import UserValidationMiddleware
 from routes.checkout_routes import router as checkout_router
 from routes.order_routes import router as order_router
+from routes.user_routes import router as user_router
+from routes.seller_routes import router as seller_router
+from routes.product_routes import router as product_router
+from routes.inventory_routes import router as inventory_router
+from routes.dashboard_routes import router as dashboard_router
 import uvicorn
 
 
@@ -51,11 +57,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.add_middleware(UserValidationMiddleware)
 
 _API_PREFIX = "/api/v1"
 app.include_router(checkout_router, prefix=_API_PREFIX)
 app.include_router(order_router, prefix=_API_PREFIX)
+app.include_router(user_router, prefix=_API_PREFIX)
+app.include_router(seller_router, prefix=_API_PREFIX)
+app.include_router(product_router, prefix=_API_PREFIX)
+app.include_router(inventory_router, prefix=_API_PREFIX)
+app.include_router(dashboard_router, prefix=_API_PREFIX)
 
 
 # ── Global exception handlers ─────────────────────────────────────────────────

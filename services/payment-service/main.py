@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from config.server_config import server_config
 from config.logger import logger
@@ -9,6 +10,7 @@ from utils.common.success_response import SuccessResponse
 from middleware.request_logger import RequestLoggerMiddleware
 from middleware.user_validation import UserValidationMiddleware
 from routes.payment_session_routes import router as payment_session_router
+from routes.payment_attempt_routes import router as payment_attempt_router
 import uvicorn
 
 
@@ -47,11 +49,19 @@ app = FastAPI(
 # middleware added runs first on the way in and last on the way out.
 # Execution order for a request:
 #   UserValidationMiddleware → RequestLoggerMiddleware → route handler
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.add_middleware(RequestLoggerMiddleware)
 app.add_middleware(UserValidationMiddleware)
 
 _API_PREFIX = "/api/v1"
 app.include_router(payment_session_router, prefix=_API_PREFIX)
+app.include_router(payment_attempt_router, prefix=_API_PREFIX)
 
 
 # ── Global exception handlers ─────────────────────────────────────────────────
