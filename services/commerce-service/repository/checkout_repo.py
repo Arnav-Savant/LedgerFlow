@@ -60,6 +60,13 @@ class CheckoutRepo:
             logger.error("Failed to fetch checkouts", error=str(e))
             raise DatabaseException(message="Failed to fetch checkouts", details=str(e))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return db.query(Checkout).count()
+        except SQLAlchemyError as e:
+            logger.error("Failed to count records", error=str(e))
+            raise DatabaseException(message="Failed to count records", details=str(e))
+
     def set_payment_session(
         self,
         db: Session,

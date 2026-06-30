@@ -10,5 +10,6 @@ class InventoryResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
-class AdjustInventoryRequest(BaseModel):
-    delta: int
+class StockUpdateRequest(BaseModel):
+    operation: str  # "add" or "remove"
+    quantity: int   # must be positive

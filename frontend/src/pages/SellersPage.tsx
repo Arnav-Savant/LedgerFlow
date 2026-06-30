@@ -2,16 +2,18 @@ import { useEffect, useState } from 'react';
 import {
   Box, Paper, Table, TableBody, TableCell, TableHead, TableRow,
   IconButton, Dialog, DialogTitle, DialogContent, DialogActions,
-  TextField, Button, Tooltip, Snackbar, Alert, Chip,
+  TextField, Button, Tooltip, Chip, TablePagination,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import BlockIcon from '@mui/icons-material/Block';
-import { listSellers, createSeller, updateSeller, disableSeller } from '../api/commerceApi';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import { listSellers, createSeller, updateSeller, disableSeller, reactivateSeller } from '../api/commerceApi';
 import type { Seller } from '../api/types';
 import PageHeader from '../components/common/PageHeader';
 import LoadingState from '../components/common/LoadingState';
 import ErrorAlert from '../components/common/ErrorAlert';
+import toast from 'react-hot-toast';
 
 interface SellerForm { name: string; email: string; }
 const emptyForm: SellerForm = { name: '', email: '' };
@@ -20,18 +22,21 @@ export default function SellersPage() {
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
+  const [total, setTotal] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Seller | null>(null);
   const [form, setForm] = useState<SellerForm>(emptyForm);
   const [saving, setSaving] = useState(false);
-  const [snack, setSnack] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listSellers();
-      setSellers(res.data.data as Seller[]);
+      const res = await listSellers(page * rowsPerPage, rowsPerPage);
+      setSellers(res.data.data.items);
+      setTotal(res.data.data.total);
     } catch {
       setError('Failed to load sellers');
     } finally {
@@ -39,7 +44,7 @@ export default function SellersPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [page, rowsPerPage]);
 
   const openCreate = () => {
     setEditTarget(null);
@@ -58,16 +63,16 @@ export default function SellersPage() {
     try {
       if (editTarget) {
         await updateSeller(editTarget.seller_id, { name: form.name, email: form.email });
-        setSnack('Seller updated');
+        toast.success('Seller updated');
       } else {
         await createSeller({ name: form.name, email: form.email });
-        setSnack('Seller created');
+        toast.success('Seller created');
       }
       setDialogOpen(false);
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Save failed';
-      setSnack(`Error: ${msg}`);
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -77,11 +82,22 @@ export default function SellersPage() {
     if (!window.confirm(`Disable seller ${seller.name}? Historical orders will remain intact.`)) return;
     try {
       await disableSeller(seller.seller_id);
-      setSnack('Seller disabled');
+      toast.success('Seller disabled');
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Disable failed';
-      setSnack(`Error: ${msg}`);
+      toast.error(msg);
+    }
+  };
+
+  const handleReactivate = async (seller: Seller) => {
+    try {
+      await reactivateSeller(seller.seller_id);
+      toast.success(`${seller.name} reactivated`);
+      load();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Reactivate failed';
+      toast.error(msg);
     }
   };
 
@@ -92,7 +108,7 @@ export default function SellersPage() {
     <Box>
       <PageHeader
         title="Sellers"
-        subtitle={`${sellers.length} total`}
+        subtitle={`${total} total`}
         action={{ label: 'New Seller', icon: <AddIcon />, onClick: openCreate }}
       />
 
@@ -136,10 +152,16 @@ export default function SellersPage() {
                         <EditIcon fontSize="small" />
                       </IconButton>
                     </Tooltip>
-                    {s.is_active && (
+                    {s.is_active ? (
                       <Tooltip title="Disable">
                         <IconButton size="small" color="warning" onClick={() => handleDisable(s)}>
                           <BlockIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip title="Reactivate">
+                        <IconButton size="small" color="success" onClick={() => handleReactivate(s)}>
+                          <CheckCircleIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
                     )}
@@ -149,6 +171,15 @@ export default function SellersPage() {
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={total}
+          page={page}
+          rowsPerPage={rowsPerPage}
+          onPageChange={(_, p) => setPage(p)}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[10, 20, 50, 100]}
+        />
       </Paper>
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth>
@@ -159,12 +190,14 @@ export default function SellersPage() {
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             required
+            fullWidth
           />
           <TextField
             label="Email"
             value={form.email}
             onChange={(e) => setForm({ ...form, email: e.target.value })}
             required
+            fullWidth
           />
         </DialogContent>
         <DialogActions>
@@ -174,17 +207,6 @@ export default function SellersPage() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      <Snackbar
-        open={!!snack}
-        autoHideDuration={3000}
-        onClose={() => setSnack(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-      >
-        <Alert severity={snack?.startsWith('Error') ? 'error' : 'success'} onClose={() => setSnack(null)}>
-          {snack}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

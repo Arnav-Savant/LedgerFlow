@@ -84,10 +84,12 @@ def initiate_checkout(
 
 
 @router.get("/", status_code=200)
-def list_checkouts(skip: int = Query(0), limit: int = Query(100), db: Session = Depends(get_db)):
+def list_checkouts(skip: int = Query(0), limit: int = Query(20), db: Session = Depends(get_db)):
     try:
         logger.info("Checkout list requested", skip=skip, limit=limit)
-        checkouts = CheckoutService().get_all_checkouts(db, skip=skip, limit=limit)
+        svc = CheckoutService()
+        checkouts = svc.get_all_checkouts(db, skip=skip, limit=limit)
+        total = svc.count_all(db)
         data = [
             CheckoutListItemResponse(
                 checkout_id=c.id,
@@ -101,7 +103,7 @@ def list_checkouts(skip: int = Query(0), limit: int = Query(100), db: Session = 
             for c in checkouts
         ]
         logger.info("Checkout list returned", count=len(data))
-        return SuccessResponse.ok(data=data, message="Checkouts fetched successfully")
+        return SuccessResponse.ok(data={"items": data, "total": total, "skip": skip, "limit": limit}, message="Checkouts fetched successfully")
     except AppException as exc:
         logger.error("AppException in list_checkouts", error=exc.error, detail=exc.message)
         return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())

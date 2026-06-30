@@ -5,6 +5,13 @@ export interface ApiResponse<T> {
   data: T;
 }
 
+export interface PaginatedData<T> {
+  items: T[];
+  total: number;
+  skip: number;
+  limit: number;
+}
+
 export interface User {
   user_id: string;
   name: string;
@@ -78,6 +85,22 @@ export interface Order {
   currency: string;
   order_status: string;
   created_at?: string;
+}
+
+export interface OrderDetail {
+  order_id: string;
+  checkout_id: string;
+  user_id: string;
+  seller_id: string;
+  seller_name: string;
+  amount: number;
+  currency: string;
+  order_status: string;
+  checkout_status: string;
+  quantity: number;
+  product: { product_id: string; name: string; price: number; currency: string; };
+  ledger_updated: boolean;
+  wallet_updated: boolean;
 }
 
 export interface AttemptSummary {

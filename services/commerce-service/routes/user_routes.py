@@ -41,13 +41,15 @@ def create_user(request: CreateUserRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/", status_code=200)
-def list_users(skip: int = Query(0), limit: int = Query(100), db: Session = Depends(get_db)):
+def list_users(skip: int = Query(0), limit: int = Query(20), db: Session = Depends(get_db)):
     try:
         logger.info("List users requested", skip=skip, limit=limit)
-        users = UserService().get_all(db, skip=skip, limit=limit)
+        svc = UserService()
+        users = svc.get_all(db, skip=skip, limit=limit)
+        total = svc.count_all(db)
         data = [_to_user_response(u).model_dump() for u in users]
         logger.info("Users listed", count=len(data))
-        return SuccessResponse.ok(data=data, message="Users fetched successfully")
+        return SuccessResponse.ok(data={"items": data, "total": total, "skip": skip, "limit": limit}, message="Users fetched successfully")
     except AppException as exc:
         logger.error("AppException in list_users", error=exc.error, detail=exc.message)
         return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())

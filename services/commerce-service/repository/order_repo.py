@@ -95,6 +95,13 @@ class OrderRepo:
             logger.error("Failed to fetch orders", error=str(e))
             raise DatabaseException(message="Failed to fetch orders", details=str(e))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return db.query(Order).count()
+        except SQLAlchemyError as e:
+            logger.error("Failed to count records", error=str(e))
+            raise DatabaseException(message="Failed to count records", details=str(e))
+
     def update_status(self, db: Session, order_id: str, status: OrderStatus) -> Order:
         try:
             order = self.get_by_id(db, order_id)

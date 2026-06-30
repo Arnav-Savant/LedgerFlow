@@ -75,3 +75,24 @@ class ProductService:
         except Exception as exc:
             db.rollback()
             raise ServiceException(message="Failed to deactivate product", details=str(exc))
+
+    def reactivate(self, db, product_id):
+        try:
+            logger.info("Reactivating product", product_id=product_id)
+            product = self.product_repo.update(db, product_id, is_active=True)
+            db.commit()
+            return product
+        except AppException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise ServiceException(message="Failed to reactivate product", details=str(exc))
+
+    def count_all(self, db):
+        try:
+            return self.product_repo.count_all(db)
+        except AppException:
+            raise
+        except Exception as exc:
+            raise ServiceException(message="Failed to count products", details=str(exc))

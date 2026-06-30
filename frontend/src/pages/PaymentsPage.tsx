@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Box, Paper, Table, TableBody, TableCell, TableHead, TableRow, Chip,
+  Box, Paper, Table, TableBody, TableCell, TableHead, TableRow, Chip, TablePagination,
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { listPaymentSessions } from '../api/paymentApi';
@@ -21,6 +21,9 @@ const UI_STATE_COLOR: Record<string, 'default' | 'warning' | 'success' | 'error'
 
 export default function PaymentsPage() {
   const [sessions, setSessions] = useState<PaymentSession[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -29,8 +32,10 @@ export default function PaymentsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await listPaymentSessions();
-      setSessions(res.data.data as PaymentSession[]);
+      const res = await listPaymentSessions(page * rowsPerPage, rowsPerPage);
+      const paginatedData = res.data.data as { items: PaymentSession[]; total: number; skip: number; limit: number };
+      setSessions(paginatedData.items);
+      setTotal(paginatedData.total);
     } catch {
       setError('Failed to load payment sessions');
     } finally {
@@ -38,14 +43,14 @@ export default function PaymentsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [page, rowsPerPage]);
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorAlert error={error} onRetry={load} />;
 
   return (
     <Box>
-      <PageHeader title="Payment Sessions" subtitle={`${sessions.length} total`} />
+      <PageHeader title="Payment Sessions" subtitle={`${total} total`} />
 
       <Paper>
         <Table size="small">
@@ -107,6 +112,15 @@ export default function PaymentsPage() {
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={total}
+          page={page}
+          rowsPerPage={rowsPerPage}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[10, 20, 50, 100]}
+        />
       </Paper>
     </Box>
   );

@@ -74,6 +74,51 @@ class InventoryService:
             logger.exception("Unexpected error releasing inventory", product_id=product_id, error=str(exc))
             raise ServiceException(message="Failed to release inventory", details=str(exc))
 
+    def count_all(self, db):
+        try:
+            return self.inventory_repo.count_all(db)
+        except AppException:
+            raise
+        except Exception as exc:
+            raise ServiceException(message="Failed to count inventory", details=str(exc))
+
+    def add_stock(self, db, product_id, quantity):
+        try:
+            logger.info("Adding stock", product_id=product_id, quantity=quantity)
+            inv = self.get_by_product_id(db, product_id)
+            inv.available_quantity += quantity
+            db.flush()
+            db.refresh(inv)
+            db.commit()
+            logger.info("Stock added", product_id=product_id, new_qty=inv.available_quantity)
+            return inv
+        except AppException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise ServiceException(message="Failed to add stock", details=str(exc))
+
+    def remove_stock(self, db, product_id, quantity):
+        try:
+            logger.info("Removing stock", product_id=product_id, quantity=quantity)
+            inv = self.get_by_product_id(db, product_id)
+            from utils.common.custom_exception import ValidationException
+            if inv.available_quantity < quantity:
+                raise ValidationException(message=f"Cannot remove {quantity} units; only {inv.available_quantity} available")
+            inv.available_quantity -= quantity
+            db.flush()
+            db.refresh(inv)
+            db.commit()
+            logger.info("Stock removed", product_id=product_id, new_qty=inv.available_quantity)
+            return inv
+        except AppException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise ServiceException(message="Failed to remove stock", details=str(exc))
+
     def commit_reservation(self, db: Session, product_id: str, quantity: int) -> Inventory:
         try:
             logger.info("Committing inventory reservation", product_id=product_id, quantity=quantity)

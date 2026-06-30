@@ -52,6 +52,13 @@ class UserRepo:
             logger.error("Failed to fetch users", error=str(e))
             raise DatabaseException(message="Failed to fetch users", details=str(e))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return db.query(User).count()
+        except SQLAlchemyError as e:
+            logger.error("Failed to count records", error=str(e))
+            raise DatabaseException(message="Failed to count records", details=str(e))
+
     def update(self, db: Session, user_id: str, **kwargs) -> User:
         try:
             user = self.get_by_id(db, user_id)

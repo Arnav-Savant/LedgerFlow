@@ -54,6 +54,13 @@ class ProductRepo:
             logger.error("Failed to fetch products", error=str(e))
             raise DatabaseException(message="Failed to fetch products", details=str(e))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return db.query(Product).count()
+        except SQLAlchemyError as e:
+            logger.error("Failed to count records", error=str(e))
+            raise DatabaseException(message="Failed to count records", details=str(e))
+
     def update(self, db: Session, product_id: str, **kwargs) -> Product:
         try:
             product = self.get_by_id(db, product_id)

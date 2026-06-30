@@ -213,6 +213,15 @@ class PaymentSessionService:
             logger.exception("Unexpected error listing payment sessions", error=str(exc))
             raise ServiceException(message="Failed to list payment sessions", details=str(exc))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return self.payment_session_repo.count_all(db)
+        except AppException:
+            raise
+        except Exception as exc:
+            logger.exception("Unexpected error counting payment sessions", error=str(exc))
+            raise ServiceException(message="Failed to count payment sessions", details=str(exc))
+
     # ── Internal helpers called by PaymentAttemptService ─────────────────────
     # These flush only — the caller (PaymentAttemptService) owns the commit.
 

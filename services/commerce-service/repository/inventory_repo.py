@@ -57,6 +57,13 @@ class InventoryRepo:
             logger.error("Failed to fetch inventory", error=str(e))
             raise DatabaseException(message="Failed to fetch inventory", details=str(e))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return db.query(Inventory).count()
+        except SQLAlchemyError as e:
+            logger.error("Failed to count records", error=str(e))
+            raise DatabaseException(message="Failed to count records", details=str(e))
+
     def reserve(self, db: Session, product_id: str, quantity: int) -> Inventory:
         """Move `quantity` units from available → reserved. Raises InsufficientStockException if stock is low."""
         try:

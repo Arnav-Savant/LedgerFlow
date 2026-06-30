@@ -124,6 +124,13 @@ class PaymentSessionRepo:
             logger.error("Failed to fetch all PaymentSessions", error=str(e))
             raise DatabaseException(message="Failed to fetch payment sessions", details=str(e))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return db.query(PaymentSession).count()
+        except SQLAlchemyError as e:
+            logger.error("Failed to count payment sessions", error=str(e))
+            raise DatabaseException(message="Failed to count payment sessions", details=str(e))
+
     def update_status(
         self,
         db: Session,

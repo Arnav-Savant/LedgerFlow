@@ -21,15 +21,16 @@ router = APIRouter(prefix="/payment-sessions", tags=["Payment Sessions"])
 @router.get("/")
 def list_payment_sessions(
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 20,
     db: Session = Depends(get_db),
 ):
     try:
         logger.info("Payment sessions list requested", skip=skip, limit=limit)
         result = PaymentSessionService().list_all(db=db, skip=skip, limit=limit)
         data = [PaymentSessionListItemResponse(**s).model_dump() for s in result]
+        total = PaymentSessionService().count_all(db=db)
         logger.info("Payment sessions list returned", count=len(data))
-        return SuccessResponse.ok(data=data, message="Payment sessions fetched successfully")
+        return SuccessResponse.ok(data={"items": data, "total": total, "skip": skip, "limit": limit}, message="Payment sessions fetched successfully")
     except AppException as exc:
         logger.error("AppException in list_payment_sessions", error=exc.error, detail=exc.message)
         return JSONResponse(

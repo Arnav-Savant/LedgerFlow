@@ -60,6 +60,14 @@ class UserService:
             db.rollback()
             raise ServiceException(message="Failed to update user", details=str(exc))
 
+    def count_all(self, db):
+        try:
+            return self.user_repo.count_all(db)
+        except AppException:
+            raise
+        except Exception as exc:
+            raise ServiceException(message="Failed to count users", details=str(exc))
+
     def delete(self, db: Session, user_id: str) -> None:
         try:
             logger.info("Deleting user", user_id=user_id)

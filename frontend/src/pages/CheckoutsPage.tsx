@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react';
 import {
   Box, Paper, Table, TableBody, TableCell, TableHead, TableRow,
   Button, Dialog, DialogTitle, DialogContent, DialogActions,
-  TextField, Snackbar, Alert, MenuItem, Select, FormControl, InputLabel,
-  IconButton, Typography, Divider,
+  TextField, Alert, MenuItem, Select, FormControl, InputLabel,
+  IconButton, Typography, Divider, TablePagination,
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { listCheckouts, initiateCheckout, listUsers, listProducts } from '../api/commerceApi';
-import type { Checkout, User, Product, CheckoutInitiateResponse } from '../api/types';
+import type { Checkout, User, Product, CheckoutInitiateResponse, PaginatedData } from '../api/types';
 import PageHeader from '../components/common/PageHeader';
 import LoadingState from '../components/common/LoadingState';
 import ErrorAlert from '../components/common/ErrorAlert';
@@ -22,6 +23,9 @@ interface ProductLine { product_id: string; quantity: string; }
 
 export default function CheckoutsPage() {
   const [checkouts, setCheckouts] = useState<Checkout[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
   const [users, setUsers] = useState<User[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,17 +35,16 @@ export default function CheckoutsPage() {
   const [lines, setLines] = useState<ProductLine[]>([{ product_id: '', quantity: '1' }]);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<CheckoutInitiateResponse | null>(null);
-  const [snack, setSnack] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [cRes, uRes, pRes] = await Promise.all([listCheckouts(), listUsers(), listProducts()]);
-      setCheckouts(cRes.data.data as Checkout[]);
-      setUsers(uRes.data.data as User[]);
-      setProducts((pRes.data.data as Product[]).filter((p) => p.is_active));
+      const cRes = await listCheckouts(page * rowsPerPage, rowsPerPage);
+      const paginatedData = cRes.data.data as { items: Checkout[]; total: number; skip: number; limit: number };
+      setCheckouts(paginatedData.items);
+      setTotal(paginatedData.total);
     } catch {
       setError('Failed to load checkouts');
     } finally {
@@ -49,13 +52,24 @@ export default function CheckoutsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  const loadDropdowns = async () => {
+    try {
+      const [uRes, pRes] = await Promise.all([listUsers(0, 1000), listProducts(0, 1000)]);
+      setUsers((uRes.data.data as PaginatedData<User>).items);
+      setProducts((pRes.data.data as PaginatedData<Product>).items.filter((p) => p.is_active));
+    } catch {
+      // dropdowns are best-effort
+    }
+  };
 
-  const openCreate = () => {
+  useEffect(() => { load(); }, [page, rowsPerPage]);
+
+  const openCreate = async () => {
     setUserId('');
     setLines([{ product_id: '', quantity: '1' }]);
     setResult(null);
     setDialogOpen(true);
+    await loadDropdowns();
   };
 
   const addLine = () => setLines([...lines, { product_id: '', quantity: '1' }]);
@@ -79,7 +93,7 @@ export default function CheckoutsPage() {
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Checkout failed';
-      setSnack(`Error: ${msg}`);
+      toast.error(`Error: ${msg}`);
     } finally {
       setSubmitting(false);
     }
@@ -92,7 +106,7 @@ export default function CheckoutsPage() {
     <Box>
       <PageHeader
         title="Checkouts"
-        subtitle={`${checkouts.length} total`}
+        subtitle={`${total} total`}
         action={{ label: 'New Checkout', icon: <AddIcon />, onClick: openCreate }}
       />
 
@@ -141,6 +155,15 @@ export default function CheckoutsPage() {
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={total}
+          page={page}
+          rowsPerPage={rowsPerPage}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[10, 20, 50, 100]}
+        />
       </Paper>
 
       {/* Create Checkout Dialog */}
@@ -238,17 +261,6 @@ export default function CheckoutsPage() {
           )}
         </DialogActions>
       </Dialog>
-
-      <Snackbar
-        open={!!snack}
-        autoHideDuration={4000}
-        onClose={() => setSnack(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-      >
-        <Alert severity={snack?.startsWith('Error') ? 'error' : 'success'} onClose={() => setSnack(null)}>
-          {snack}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

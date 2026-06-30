@@ -72,3 +72,24 @@ class SellerService:
         except Exception as exc:
             db.rollback()
             raise ServiceException(message="Failed to disable seller", details=str(exc))
+
+    def reactivate(self, db, seller_id):
+        try:
+            logger.info("Reactivating seller", seller_id=seller_id)
+            seller = self.seller_repo.update(db, seller_id, is_active=True)
+            db.commit()
+            return seller
+        except AppException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise ServiceException(message="Failed to reactivate seller", details=str(exc))
+
+    def count_all(self, db):
+        try:
+            return self.seller_repo.count_all(db)
+        except AppException:
+            raise
+        except Exception as exc:
+            raise ServiceException(message="Failed to count sellers", details=str(exc))

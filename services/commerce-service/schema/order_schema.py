@@ -14,6 +14,8 @@ class OrderDetailResponse(BaseModel):
     checkout_id: str
     user_id: str
     seller_id: str
+    seller_name: str
+    quantity: int
     amount: int
     currency: str
     order_status: str

@@ -2,19 +2,21 @@ import { useEffect, useState } from 'react';
 import {
   Box, Paper, Table, TableBody, TableCell, TableHead, TableRow,
   IconButton, Dialog, DialogTitle, DialogContent, DialogActions,
-  TextField, Button, Tooltip, Snackbar, Alert, Chip,
+  TextField, Button, Tooltip, Chip, TablePagination,
   MenuItem, Select, FormControl, InputLabel,
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import BlockIcon from '@mui/icons-material/Block';
-import { listProducts, createProduct, updateProduct, deactivateProduct, listSellers } from '../api/commerceApi';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import { listProducts, createProduct, updateProduct, deactivateProduct, reactivateProduct, listSellers } from '../api/commerceApi';
 import type { Product, Seller } from '../api/types';
 import PageHeader from '../components/common/PageHeader';
 import LoadingState from '../components/common/LoadingState';
 import ErrorAlert from '../components/common/ErrorAlert';
 import MoneyDisplay from '../components/common/MoneyDisplay';
+import toast from 'react-hot-toast';
 
 const CURRENCIES = ['INR', 'USD', 'GBP', 'EUR', 'JPY'];
 
@@ -31,19 +33,25 @@ export default function ProductsPage() {
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
+  const [total, setTotal] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Product | null>(null);
   const [form, setForm] = useState<ProductForm>(emptyForm);
   const [saving, setSaving] = useState(false);
-  const [snack, setSnack] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [pRes, sRes] = await Promise.all([listProducts(), listSellers()]);
-      setProducts(pRes.data.data as Product[]);
-      setSellers(sRes.data.data as Seller[]);
+      const [pRes, sRes] = await Promise.all([
+        listProducts(page * rowsPerPage, rowsPerPage),
+        listSellers(0, 1000),
+      ]);
+      setProducts(pRes.data.data.items);
+      setTotal(pRes.data.data.total);
+      setSellers(sRes.data.data.items);
     } catch {
       setError('Failed to load products');
     } finally {
@@ -51,7 +59,7 @@ export default function ProductsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [page, rowsPerPage]);
 
   const sellerName = (id: string) => sellers.find((s) => s.seller_id === id)?.name ?? id.slice(0, 8);
 
@@ -80,7 +88,7 @@ export default function ProductsPage() {
         if (form.name) payload.name = form.name;
         if (form.price) payload.price = parseInt(form.price, 10);
         await updateProduct(editTarget.product_id, payload);
-        setSnack('Product updated');
+        toast.success('Product updated');
       } else {
         await createProduct({
           seller_id: form.seller_id,
@@ -88,13 +96,13 @@ export default function ProductsPage() {
           price: parseInt(form.price, 10),
           currency: form.currency,
         });
-        setSnack('Product created');
+        toast.success('Product created');
       }
       setDialogOpen(false);
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Save failed';
-      setSnack(`Error: ${msg}`);
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -104,11 +112,22 @@ export default function ProductsPage() {
     if (!window.confirm(`Deactivate product ${product.name}? Historical orders remain valid.`)) return;
     try {
       await deactivateProduct(product.product_id);
-      setSnack('Product deactivated');
+      toast.success('Product deactivated');
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Deactivate failed';
-      setSnack(`Error: ${msg}`);
+      toast.error(msg);
+    }
+  };
+
+  const handleReactivate = async (product: Product) => {
+    try {
+      await reactivateProduct(product.product_id);
+      toast.success(`${product.name} reactivated`);
+      load();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Reactivate failed';
+      toast.error(msg);
     }
   };
 
@@ -119,7 +138,7 @@ export default function ProductsPage() {
     <Box>
       <PageHeader
         title="Products"
-        subtitle={`${products.length} total`}
+        subtitle={`${total} total`}
         action={{ label: 'New Product', icon: <AddIcon />, onClick: openCreate }}
       />
 
@@ -169,10 +188,16 @@ export default function ProductsPage() {
                         <EditIcon fontSize="small" />
                       </IconButton>
                     </Tooltip>
-                    {p.is_active && (
+                    {p.is_active ? (
                       <Tooltip title="Deactivate">
                         <IconButton size="small" color="warning" onClick={() => handleDeactivate(p)}>
                           <BlockIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip title="Reactivate">
+                        <IconButton size="small" color="success" onClick={() => handleReactivate(p)}>
+                          <CheckCircleIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
                     )}
@@ -182,13 +207,22 @@ export default function ProductsPage() {
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={total}
+          page={page}
+          rowsPerPage={rowsPerPage}
+          onPageChange={(_, p) => setPage(p)}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[10, 20, 50, 100]}
+        />
       </Paper>
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>{editTarget ? 'Edit Product' : 'New Product'}</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: '16px !important' }}>
           {!editTarget && (
-            <FormControl size="small" required>
+            <FormControl size="small" required fullWidth>
               <InputLabel>Seller</InputLabel>
               <Select
                 value={form.seller_id}
@@ -206,6 +240,7 @@ export default function ProductsPage() {
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             required
+            fullWidth
           />
           <TextField
             label="Price (in smallest unit, e.g. paise)"
@@ -213,10 +248,11 @@ export default function ProductsPage() {
             value={form.price}
             onChange={(e) => setForm({ ...form, price: e.target.value })}
             required
+            fullWidth
             helperText="e.g. 50000 = ₹500.00"
           />
           {!editTarget && (
-            <FormControl size="small">
+            <FormControl size="small" fullWidth>
               <InputLabel>Currency</InputLabel>
               <Select
                 value={form.currency}
@@ -235,17 +271,6 @@ export default function ProductsPage() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      <Snackbar
-        open={!!snack}
-        autoHideDuration={3000}
-        onClose={() => setSnack(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-      >
-        <Alert severity={snack?.startsWith('Error') ? 'error' : 'success'} onClose={() => setSnack(null)}>
-          {snack}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

@@ -12,6 +12,7 @@ import CheckoutDetailPage from './pages/CheckoutDetailPage';
 import OrdersPage from './pages/OrdersPage';
 import PaymentsPage from './pages/PaymentsPage';
 import PaymentSessionPage from './pages/PaymentSessionPage';
+import OrderDetailPage from './pages/OrderDetailPage';
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
                   <Route path="/checkouts" element={<CheckoutsPage />} />
                   <Route path="/checkouts/:checkoutId" element={<CheckoutDetailPage />} />
                   <Route path="/orders" element={<OrdersPage />} />
+                  <Route path="/orders/:orderId" element={<OrderDetailPage />} />
                   <Route path="/payments" element={<PaymentsPage />} />
                 </Routes>
               </AppLayout>

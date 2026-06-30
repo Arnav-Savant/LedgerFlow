@@ -14,13 +14,15 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 
 
 @router.get("/", status_code=200)
-def list_orders(skip: int = Query(0), limit: int = Query(100), db: Session = Depends(get_db)):
+def list_orders(skip: int = Query(0), limit: int = Query(20), db: Session = Depends(get_db)):
     try:
         logger.info("Order list requested", skip=skip, limit=limit)
-        orders = OrderService().get_all(db, skip=skip, limit=limit)
+        svc = OrderService()
+        orders = svc.get_all(db, skip=skip, limit=limit)
+        total = svc.count_all(db)
         data = [OrderListItemResponse(**o).model_dump() for o in orders]
         logger.info("Order list returned", count=len(data))
-        return SuccessResponse.ok(data=data, message="Orders fetched successfully")
+        return SuccessResponse.ok(data={"items": data, "total": total, "skip": skip, "limit": limit}, message="Orders fetched successfully")
     except AppException as exc:
         logger.error("AppException in list_orders", error=exc.error, detail=exc.message)
         return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
@@ -33,12 +35,14 @@ def list_orders(skip: int = Query(0), limit: int = Query(100), db: Session = Dep
 def get_order(order_id: str, db: Session = Depends(get_db)):
     try:
         logger.info("Order detail requested", order_id=order_id)
-        order, product = OrderService().get_by_id(db, order_id)
+        order, product, seller_name = OrderService().get_by_id(db, order_id)
         data = OrderDetailResponse(
             order_id=order.id,
             checkout_id=order.checkout_id,
             user_id=order.user_id,
             seller_id=order.seller_id,
+            seller_name=seller_name,
+            quantity=order.quantity,
             amount=order.amount,
             currency=order.currency.value if hasattr(order.currency, "value") else order.currency,
             order_status=order.order_status.value if hasattr(order.order_status, "value") else order.order_status,

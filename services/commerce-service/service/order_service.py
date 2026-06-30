@@ -113,12 +113,26 @@ class OrderService:
             logger.exception("Unexpected error fetching all orders", error=str(exc))
             raise ServiceException(message="Failed to fetch orders", details=str(exc))
 
-    def get_by_id(self, db: Session, order_id: str) -> tuple[Order, Product]:
+    def count_all(self, db):
+        try:
+            return self.order_repo.count_all(db)
+        except AppException:
+            raise
+        except Exception as exc:
+            raise ServiceException(message="Failed to count orders", details=str(exc))
+
+    def get_by_id(self, db: Session, order_id: str) -> tuple[Order, Product, str]:
         try:
             logger.info("Fetching order", order_id=order_id)
             order = self.order_repo.get_by_id(db, order_id)
             product = self.product_service.get_by_id(db, order.product_id)
-            return order, product
+            try:
+                from service.seller_service import SellerService
+                seller = SellerService().get_by_id(db, order.seller_id)
+                seller_name = seller.name
+            except Exception:
+                seller_name = order.seller_id
+            return order, product, seller_name
         except AppException:
             raise
         except Exception as exc:

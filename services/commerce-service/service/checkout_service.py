@@ -229,6 +229,14 @@ class CheckoutService:
             logger.exception("Unexpected error in initiate_checkout", user_id=user_id, error=str(exc))
             raise ServiceException(message="Failed to initiate checkout", details=str(exc))
 
+    def count_all(self, db):
+        try:
+            return self.checkout_repo.count_all(db)
+        except AppException:
+            raise
+        except Exception as exc:
+            raise ServiceException(message="Failed to count checkouts", details=str(exc))
+
     def get_all_checkouts(self, db: Session, skip: int = 0, limit: int = 100) -> list[Checkout]:
         try:
             logger.info("Fetching all checkouts", skip=skip, limit=limit)

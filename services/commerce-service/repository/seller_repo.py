@@ -52,6 +52,13 @@ class SellerRepo:
             logger.error("Failed to fetch sellers", error=str(e))
             raise DatabaseException(message="Failed to fetch sellers", details=str(e))
 
+    def count_all(self, db: Session) -> int:
+        try:
+            return db.query(Seller).count()
+        except SQLAlchemyError as e:
+            logger.error("Failed to count records", error=str(e))
+            raise DatabaseException(message="Failed to count records", details=str(e))
+
     def update(self, db: Session, seller_id: str, **kwargs) -> Seller:
         try:
             seller = self.get_by_id(db, seller_id)

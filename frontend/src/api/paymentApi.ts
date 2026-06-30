@@ -1,10 +1,10 @@
 import axios from 'axios';
-import type { ApiResponse, PaymentSession } from './types';
+import type { ApiResponse, PaymentSession, PaginatedData } from './types';
 
 const payment = axios.create({ baseURL: '/payment/api/v1' });
 
-export const listPaymentSessions = () =>
-  payment.get<ApiResponse<PaymentSession[]>>('/payment-sessions/');
+export const listPaymentSessions = (skip = 0, limit = 20) =>
+  payment.get<ApiResponse<PaginatedData<PaymentSession>>>('payment-sessions/', { params: { skip, limit } });
 
 export const getPaymentSession = (sessionId: string) =>
   payment.get<ApiResponse<PaymentSession>>(`/payment-sessions/${sessionId}`);

@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Box, Paper, Table, TableBody, TableCell, TableHead, TableRow } from '@mui/material';
+import { useNavigate } from 'react-router-dom';
+import {
+  Box, Paper, Table, TableBody, TableCell, TableHead, TableRow, TablePagination,
+} from '@mui/material';
 import { listOrders } from '../api/commerceApi';
 import type { Order } from '../api/types';
 import PageHeader from '../components/common/PageHeader';
@@ -10,15 +13,21 @@ import MoneyDisplay from '../components/common/MoneyDisplay';
 
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listOrders();
-      setOrders(res.data.data as Order[]);
+      const res = await listOrders(page * rowsPerPage, rowsPerPage);
+      const data = res.data.data;
+      setOrders(data.items);
+      setTotal(data.total);
     } catch {
       setError('Failed to load orders');
     } finally {
@@ -26,14 +35,14 @@ export default function OrdersPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [page, rowsPerPage]);
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorAlert error={error} onRetry={load} />;
 
   return (
     <Box>
-      <PageHeader title="Orders" subtitle={`${orders.length} total`} />
+      <PageHeader title="Orders" subtitle={`${total} total`} />
 
       <Paper>
         <Table size="small">
@@ -57,7 +66,11 @@ export default function OrdersPage() {
               </TableRow>
             ) : (
               orders.map((o) => (
-                <TableRow key={o.order_id}>
+                <TableRow
+                  key={o.order_id}
+                  sx={{ cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
+                  onClick={() => navigate(`/orders/${o.order_id}`)}
+                >
                   <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
                     {o.order_id.slice(0, 12)}…
                   </TableCell>
@@ -76,6 +89,15 @@ export default function OrdersPage() {
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={total}
+          page={page}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[10, 20, 50]}
+        />
       </Paper>
     </Box>
   );

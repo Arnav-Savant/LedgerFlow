@@ -49,13 +49,15 @@ def create_product(request: CreateProductRequest, db: Session = Depends(get_db))
 
 
 @router.get("/", status_code=200)
-def list_products(skip: int = Query(0), limit: int = Query(100), db: Session = Depends(get_db)):
+def list_products(skip: int = Query(0), limit: int = Query(20), db: Session = Depends(get_db)):
     try:
         logger.info("List products requested", skip=skip, limit=limit)
-        products = ProductService().get_all(db, skip=skip, limit=limit)
+        svc = ProductService()
+        products = svc.get_all(db, skip=skip, limit=limit)
+        total = svc.count_all(db)
         data = [_to_product_response(p).model_dump() for p in products]
         logger.info("Products listed", count=len(data))
-        return SuccessResponse.ok(data=data, message="Products fetched successfully")
+        return SuccessResponse.ok(data={"items": data, "total": total, "skip": skip, "limit": limit}, message="Products fetched successfully")
     except AppException as exc:
         logger.error("AppException in list_products", error=exc.error, detail=exc.message)
         return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
@@ -110,4 +112,20 @@ def deactivate_product(product_id: str, db: Session = Depends(get_db)):
         return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
     except Exception as exc:
         logger.exception("Unhandled error in deactivate_product", product_id=product_id, error=str(exc))
+        return JSONResponse(status_code=500, content=ErrorResponse.internal_error().model_dump())
+
+
+@router.patch("/{product_id}/reactivate", status_code=200)
+def reactivate_product(product_id: str, db: Session = Depends(get_db)):
+    try:
+        logger.info("Reactivate product requested", product_id=product_id)
+        product = ProductService().reactivate(db, product_id)
+        data = _to_product_response(product)
+        logger.info("Product reactivated", product_id=product_id)
+        return SuccessResponse.ok(data=data.model_dump(), message="Product reactivated successfully")
+    except AppException as exc:
+        logger.error("AppException in reactivate_product", product_id=product_id, error=exc.error, detail=exc.message)
+        return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
+    except Exception as exc:
+        logger.exception("Unhandled error in reactivate_product", product_id=product_id, error=str(exc))
         return JSONResponse(status_code=500, content=ErrorResponse.internal_error().model_dump())

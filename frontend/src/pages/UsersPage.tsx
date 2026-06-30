@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import {
   Box, Paper, Table, TableBody, TableCell, TableHead, TableRow,
   IconButton, Dialog, DialogTitle, DialogContent, DialogActions,
-  TextField, Button, Tooltip, Snackbar, Alert,
+  TextField, Button, Tooltip, TablePagination,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import toast from 'react-hot-toast';
 import { listUsers, createUser, updateUser, deleteUser } from '../api/commerceApi';
 import type { User } from '../api/types';
 import PageHeader from '../components/common/PageHeader';
@@ -23,20 +24,24 @@ const emptyForm: UserForm = { name: '', email: '', phone: '' };
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<User | null>(null);
   const [form, setForm] = useState<UserForm>(emptyForm);
   const [saving, setSaving] = useState(false);
-  const [snack, setSnack] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listUsers();
-      setUsers(res.data.data as User[]);
+      const res = await listUsers(page * rowsPerPage, rowsPerPage);
+      const paginatedData = res.data.data as { items: User[]; total: number; skip: number; limit: number };
+      setUsers(paginatedData.items);
+      setTotal(paginatedData.total);
     } catch {
       setError('Failed to load users');
     } finally {
@@ -44,7 +49,7 @@ export default function UsersPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [page, rowsPerPage]);
 
   const openCreate = () => {
     setEditTarget(null);
@@ -67,16 +72,16 @@ export default function UsersPage() {
         if (form.email) payload.email = form.email;
         if (form.phone) payload.phone = form.phone;
         await updateUser(editTarget.user_id, payload);
-        setSnack('User updated');
+        toast.success('User updated');
       } else {
         await createUser({ name: form.name, email: form.email, phone: form.phone || undefined });
-        setSnack('User created');
+        toast.success('User created');
       }
       setDialogOpen(false);
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Save failed';
-      setSnack(`Error: ${msg}`);
+      toast.error(`Error: ${msg}`);
     } finally {
       setSaving(false);
     }
@@ -86,11 +91,11 @@ export default function UsersPage() {
     if (!window.confirm(`Delete user ${user.name}?`)) return;
     try {
       await deleteUser(user.user_id);
-      setSnack('User deleted');
+      toast.success('User deleted');
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Delete failed';
-      setSnack(`Error: ${msg}`);
+      toast.error(`Error: ${msg}`);
     }
   };
 
@@ -101,7 +106,7 @@ export default function UsersPage() {
     <Box>
       <PageHeader
         title="Users"
-        subtitle={`${users.length} total`}
+        subtitle={`${total} total`}
         action={{ label: 'New User', icon: <AddIcon />, onClick: openCreate }}
       />
 
@@ -149,6 +154,15 @@ export default function UsersPage() {
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={total}
+          page={page}
+          rowsPerPage={rowsPerPage}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[10, 20, 50, 100]}
+        />
       </Paper>
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth>
@@ -179,17 +193,6 @@ export default function UsersPage() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      <Snackbar
-        open={!!snack}
-        autoHideDuration={3000}
-        onClose={() => setSnack(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-      >
-        <Alert severity={snack?.startsWith('Error') ? 'error' : 'success'} onClose={() => setSnack(null)}>
-          {snack}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

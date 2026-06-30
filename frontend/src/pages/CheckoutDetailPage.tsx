@@ -192,7 +192,11 @@ export default function CheckoutDetailPage() {
                   </TableRow>
                 ) : (
                   checkout.orders.map((o) => (
-                    <TableRow key={o.order_id}>
+                    <TableRow
+                      key={o.order_id}
+                      sx={{ cursor: 'pointer' }}
+                      onClick={() => navigate(`/orders/${o.order_id}`)}
+                    >
                       <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
                         {o.order_id.slice(0, 12)}…
                       </TableCell>

@@ -41,13 +41,15 @@ def create_seller(request: CreateSellerRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/", status_code=200)
-def list_sellers(skip: int = Query(0), limit: int = Query(100), db: Session = Depends(get_db)):
+def list_sellers(skip: int = Query(0), limit: int = Query(20), db: Session = Depends(get_db)):
     try:
         logger.info("List sellers requested", skip=skip, limit=limit)
-        sellers = SellerService().get_all(db, skip=skip, limit=limit)
+        svc = SellerService()
+        sellers = svc.get_all(db, skip=skip, limit=limit)
+        total = svc.count_all(db)
         data = [_to_seller_response(s).model_dump() for s in sellers]
         logger.info("Sellers listed", count=len(data))
-        return SuccessResponse.ok(data=data, message="Sellers fetched successfully")
+        return SuccessResponse.ok(data={"items": data, "total": total, "skip": skip, "limit": limit}, message="Sellers fetched successfully")
     except AppException as exc:
         logger.error("AppException in list_sellers", error=exc.error, detail=exc.message)
         return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
@@ -102,4 +104,20 @@ def disable_seller(seller_id: str, db: Session = Depends(get_db)):
         return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
     except Exception as exc:
         logger.exception("Unhandled error in disable_seller", seller_id=seller_id, error=str(exc))
+        return JSONResponse(status_code=500, content=ErrorResponse.internal_error().model_dump())
+
+
+@router.patch("/{seller_id}/reactivate", status_code=200)
+def reactivate_seller(seller_id: str, db: Session = Depends(get_db)):
+    try:
+        logger.info("Reactivate seller requested", seller_id=seller_id)
+        seller = SellerService().reactivate(db, seller_id)
+        data = _to_seller_response(seller)
+        logger.info("Seller reactivated", seller_id=seller_id)
+        return SuccessResponse.ok(data=data.model_dump(), message="Seller reactivated successfully")
+    except AppException as exc:
+        logger.error("AppException in reactivate_seller", seller_id=seller_id, error=exc.error, detail=exc.message)
+        return JSONResponse(status_code=exc.status_code, content=ErrorResponse.from_exception(exc).model_dump())
+    except Exception as exc:
+        logger.exception("Unhandled error in reactivate_seller", seller_id=seller_id, error=str(exc))
         return JSONResponse(status_code=500, content=ErrorResponse.internal_error().model_dump())
